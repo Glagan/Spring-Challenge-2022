@@ -37,6 +37,10 @@ type Entity = Position & {
 	willControl: boolean;
 };
 
+type ControlledEntity = Entity & {
+	remaining: number;
+};
+
 enum ActionType {
 	WAIT,
 	MOVE,
@@ -77,28 +81,26 @@ type Action =
 			y: number;
 	  };
 
+const CLOSE_SPIDER_BASE = 25000000; // 5000 * 5000
+const CLOSE_SPIDER_DANGER_THRESHOLD = 16000000; // 4000 * 4000
+const CLOSE_SPIDER_CONTROL_THRESHOLD = 21160000; // 4600 * 4600
+const CLOSE_SPIDER_PUSH_THRESHOLD = 7840000; // 2800 * 2800
 const CLOSE_SPIDER_THREAT = 64000000; // 8000 * 8000
 const CLOSE_SPIDER_REACH = 36000000; // 6000 * 6000
 const CLOSE_DISTANCE = 4840000; // 2200 * 2200
+const WIND_RANGE = 1638400; // 1280 * 1280
+const CONTROL_RANGE = 4840000; // 2200 * 2200
+const TOO_CLOSE_DISTANCE = 5760000; // 2400 * 2400 -- 2000 + movement speed
 const RANDOM_CLOSE = 640000; // 800 * 800
+const BASE_CONTROL_TIME = 5;
 
 // * Utils
 
-function distance(e: Entity | Position, e2: Entity | Position): number;
-function distance(x: number, y: number, x2: number, y2: number): number;
-function distance(
-	x_or_e: Entity | Position | number,
-	y_or_e2: Entity | Position | number,
-	x2?: number,
-	y2?: number
-): number {
+function distance(e: Entity | Position, e2: Entity | Position): number {
 	// return Math.sqrt((Math.pow(x2 - x, 2)) + (Math.pow(y2 - y, 2)))
-	if (typeof x_or_e === "number" && typeof y_or_e2 === "number") {
-		return (x2 - x_or_e) * (x2 - x_or_e) + (y2 - y_or_e2) * (y2 - y_or_e2);
-	}
 	return (
-		((y_or_e2 as Position).x - (x_or_e as Position).x) * ((y_or_e2 as Position).x - (x_or_e as Position).x) +
-		((y_or_e2 as Position).y - (x_or_e as Position).y) * ((y_or_e2 as Position).y - (x_or_e as Position).y)
+		((e2 as Position).x - (e as Position).x) * ((e2 as Position).x - (e as Position).x) +
+		((e2 as Position).y - (e as Position).y) * ((e2 as Position).y - (e as Position).y)
 	);
 }
 
@@ -107,25 +109,35 @@ function distanceUnit(unit: number) {
 }
 
 function isCloseEnough(e: Entity, e2: Entity): boolean {
-	return distance(e.x, e.y, e2.x, e2.y) < CLOSE_DISTANCE;
+	return distance(e, e2) < CLOSE_DISTANCE;
 }
 
 function isCloseEnoughToEnenyBase(e: Entity, ebp: Position): boolean {
-	return distance(e.x, e.y, ebp.x, ebp.y) < CLOSE_DISTANCE;
+	return distance(e, ebp) < CLOSE_DISTANCE;
 }
 
 function move(position: Entity | Position): Action {
 	return { type: ActionType.MOVE, x: position.x, y: position.y };
 }
 
+let controlledSpiders: ControlledEntity[] = [];
+function control(entity: Entity): Action {
+	controlledSpiders.push({ ...entity, remaining: BASE_CONTROL_TIME });
+	return { type: ActionType.SPELL, spell: Spell.CONTROL, entity: entity.id, x: enemyBase.x, y: enemyBase.y };
+}
+
+function push(entities: Entity[]): Action {
+	for (const entity of entities) {
+		entity.willPush = true;
+	}
+	return { type: ActionType.SPELL, spell: Spell.WIND, x: enemyBase.x, y: enemyBase.y };
+}
+
 // * Base position
 
 const inputs: string[] = readline().split(" ");
 const base: Position = { x: parseInt(inputs[0]), y: parseInt(inputs[1]) }; // The corner of the map representing your base
-const enemyBase: Position = {
-	x: base.x == 0 ? 17630 : 0,
-	y: base.x == 0 ? 9000 : 0,
-};
+const enemyBase: Position = { x: base.x == 0 ? 17630 : 0, y: base.x == 0 ? 9000 : 0 };
 const heroesPerPlayer: number = parseInt(readline()); // Always 3
 const defaultPosition: Position = base.x == 0 ? { x: 3600, y: 3400 } : { x: 13600, y: 6000 };
 const mapMiddle: Position = { x: 8760, y: 4570 };
@@ -136,22 +148,106 @@ const roles: [Role, Role, Role] = [Role.Protector, Role.Agent, Role.Agent];
 // * Utility
 
 const byHeroDistance = (hero: Entity) => (a: Entity, b: Entity) => {
-	const aD = distance(hero.x, hero.y, a.x, a.y);
-	const bD = distance(hero.x, hero.y, b.x, b.y);
-	return aD - bD;
+	return distance(hero, a) - distance(hero, b);
 };
+
+// * Common patterns
+
+/** Other order
+	// Cast Wind spell to pushable spiders if there is more than 1
+	if (closestSpiders.length > 0) {
+		const dangerSpiders = closestSpiders
+			.filter(spider => distance(hero, spider) <= WIND_RANGE)
+			.filter(spider => !spider.willPush);
+		if (dangerSpiders.length > 1) {
+			action = push(dangerSpiders[0]);
+		}
+	}
+
+	// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
+	if (!action) {
+		const dangerSpiders = closestSpiders
+			.filter(spider => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
+			.filter(spider => distance(hero, spider) <= CONTROL_RANGE)
+			.filter(spider => controlledSpiders.findIndex(cs => cs.id == spider.id) < 0);
+		if (dangerSpiders.length > 0) {
+			action = control(dangerSpiders[0]);
+		}
+	}
+
+	// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
+	if (!action) {
+		const dangerSpiders = closestSpiders
+			.filter(spider => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
+			.filter(spider => distance(hero, spider) <= CONTROL_RANGE)
+			.filter(spider => controlledSpiders.findIndex(cs => cs.id == spider.id) < 0);
+		if (dangerSpiders.length > 0) {
+			action = control(dangerSpiders[0]);
+		}
+	}
+
+	// Cast Control spell to really close spiders
+	if (closestSpiders.length > 0) {
+		const dangerSpiders = closestSpiders
+			.filter(spider => spider.distance <= CLOSE_SPIDER_THREAT_CONTROL_THRESHOLD)
+			.filter(spider => distance(hero, spider) <= CONTROL_RANGE)
+			.filter(spider => controlledSpiders.findIndex(cs => cs.id == spider.id) < 0);
+		if (dangerSpiders.length > 0) {
+			action = control(dangerSpiders[0]);
+		}
+	}
+*/
+
+function handleAndExtract(hero: Entity, closestSpiders: Entity[]) {
+	if (closestSpiders.length > 0) {
+		// Cast Control spell to really close spiders
+		// -- OR  Cast Wind spell to pushable spiders if there is more than 1
+		{
+			const dangerSpiders = closestSpiders
+				.filter((spider) => spider.distance <= CLOSE_SPIDER_DANGER_THRESHOLD)
+				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0)
+				.filter((spider) => !spider.willPush);
+			const canControl = dangerSpiders.filter((spider) => distance(hero, spider) <= CONTROL_RANGE);
+			const canPush = dangerSpiders.filter((spider) => distance(hero, spider) <= WIND_RANGE);
+			if (canPush.length > 1) {
+				return push(canPush);
+			} else if (canControl.length > 0) {
+				return control(canControl[0]);
+			}
+		}
+
+		// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
+		// -- OR Cast Wind spell to pushable spiders if there is more than 1
+		{
+			const dangerSpiders = closestSpiders
+				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0)
+				.filter((spider) => !spider.willPush);
+			const canControl = dangerSpiders
+				.filter((spider) => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
+				.filter((spider) => distance(hero, spider) <= CONTROL_RANGE);
+			const canPush = dangerSpiders
+				.filter((spider) => spider.distance >= CLOSE_SPIDER_PUSH_THRESHOLD)
+				.filter((spider) => distance(hero, spider) <= WIND_RANGE);
+			if (canPush.length > 1) {
+				return push(canPush);
+			} else if (canControl.length > 0) {
+				return control(canControl[0]);
+			}
+		}
+	}
+	return undefined;
+}
 
 // * Game loop
 
 while (true) {
 	// Current state
-	let health: number = 0;
-	let mana: number = 0;
-	for (let i = 0; i < 2; i++) {
-		const inputs: string[] = readline().split(" ");
-		health = parseInt(inputs[0]); // Your base health
-		mana = parseInt(inputs[1]); // Ignore in the first league; Spend ten mana to cast a spell
-	}
+	const selfStatus: string[] = readline().split(" ");
+	let health: number = parseInt(selfStatus[0]); // Your base health
+	let mana: number = parseInt(selfStatus[1]); // Spend ten mana to cast a spell
+	const enemyStatus: string[] = readline().split(" ");
+	let enemyHealth: number = parseInt(enemyStatus[0]);
+	let enemyMana: number = parseInt(enemyStatus[1]);
 
 	// Entities
 	const entityCount: number = parseInt(readline()); // Amount of heros and monsters you can see
@@ -176,7 +272,7 @@ while (true) {
 			willPush: false,
 			willControl: false,
 		};
-		entity.distance = distance(base.x, base.y, entity.x, entity.y);
+		entity.distance = distance(base, entity);
 		entities.push(entity);
 		if (entity.type == EntityType.monster) {
 			spiders.push(entity);
@@ -189,6 +285,14 @@ while (true) {
 		.sort((a, b) => a.distance - b.distance);
 	const threatSpiders = closestSpiders.filter((spider) => spider.threatFor == Threat.self);
 
+	// Cleanup controlled spiders -- remove dead and update remaining
+	for (const spider of controlledSpiders) {
+		spider.remaining -= 1;
+	}
+	controlledSpiders = controlledSpiders.filter(
+		(cs) => spiders.findIndex((s) => s.id === cs.id) < 0 || cs.remaining < 0
+	);
+
 	// Actions
 	const targets: Entity[] = [];
 	for (let i = 0; i < heroesPerPlayer; i++) {
@@ -200,15 +304,17 @@ while (true) {
 		// Protector
 		if (roles[i] === Role.Protector) {
 			// Select target
+			let target: Entity | undefined;
 			// If there is no threatening spiders...
 			if (threatSpiders.length == 0) {
 				// ... select an already targeted
 				if (targets.length > 0 /* && isCloseEnough(hero, targets[0]) */) {
-					action = move(targets[0]);
+					target = targets[0];
+					action = move(target);
 				}
 				// ... or the closest one
 				else if (closestSpiders.length > 0 && isCloseEnough(hero, closestSpiders[0])) {
-					const target = closestSpiders.sort(byHeroDistance(hero)).splice(0, 1)[0];
+					target = closestSpiders.sort(byHeroDistance(hero)).splice(0, 1)[0];
 					action = move(target);
 					targets.push(target);
 				}
@@ -217,38 +323,60 @@ while (true) {
 			if (targets.length > 0) {
 				const spider = targets.sort(byHeroDistance(hero))[0];
 				if (spider.distance < CLOSE_SPIDER_REACH && isCloseEnough(hero, spider)) {
+					target = spider;
 					action = move(spider);
 				}
 			}
 			// If there is really no targets select the closest threatening one
 			if (!action && threatSpiders.length > 0) {
-				const target = threatSpiders.splice(0, 1)[0];
+				target = threatSpiders.splice(0, 1)[0];
 				action = move(target);
 				targets.push(target);
 			}
 
-			// TODO Cast Wind spell to pushable spiders
-			// TODO Cast Control spell to really close spiders
+			// Common patterns
+			if (mana > 10) {
+				const response = handleAndExtract(hero, closestSpiders);
+				if (response) action = response;
+			}
+
+			// Move if there is a target and no spells to cast
+			if (target && !action) {
+				action = move(target);
+			}
+			if (!action) {
+				action = move(defaultPosition);
+			}
 		}
 		// Agent
 		else {
 			// Check if we already have a target
 			let target = targets[i];
-			if (target) {
-				// Cleanup dead entities
-				if (entities.findIndex((e) => e.id == target.id) < 0) {
-					targets[i] = null;
-					target = null;
-				}
+			// Cleanup dead entities
+			if (target && entities.findIndex((e) => e.id == target.id) < 0) {
+				targets[i] = null;
+				target = null;
 			}
 
 			// Find a target -- which is not a threat and closest to the hero
 			if (!target) {
 				const targetSpiders = spiders
 					.filter((spider) => threatSpiders.findIndex((ts) => ts.id == spider.id) < 0)
+					// Still target controlled spiders that are in our base
+					.filter(
+						(spider) =>
+							controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0 ||
+							spider.distance < CLOSE_SPIDER_BASE
+					)
 					.sort(byHeroDistance(hero));
 				if (targetSpiders.length > 0) {
-					target = targetSpiders[0];
+					// Focus the closest AND any threat to ourself
+					const threatSpiders = targetSpiders.filter((spider) => spider.threatFor === Threat.self);
+					if (threatSpiders.length > 0) {
+						target = threatSpiders[0];
+					} else {
+						target = targetSpiders[0];
+					}
 					randomDestination[i] = null;
 				}
 			}
@@ -266,7 +394,9 @@ while (true) {
 						randomDestination[i] = null;
 					}
 				}
-				// TODO Fix calculated distance, heroes goes too far
+				// TODO Fix calculated distance, heroes goes too far ?
+				// TODO Move closer to the enemy base
+				// TODO Check if target can be pushed inside the enemy base with wind spell
 				if (!destination && distance(hero, mapMiddle) < CLOSE_DISTANCE) {
 					const randomMiddle = { ...mapMiddle };
 					randomMiddle.x += Math.round(Math.random() * 5000 - 2500);
@@ -282,7 +412,21 @@ while (true) {
 			// If we **do** have a target, try to send spiders to the enemy base
 			// -- Keep at least 100 for other higher priority spells
 			else if (mana > 100) {
-				// TODO Cast control spell to random spiders
+				const controllableSpiders = spiders
+					.filter((spider) => distance(hero, spider) <= CONTROL_RANGE)
+					.filter((spider) => controlledSpiders.findIndex((c) => c.id === spider.id) < 0)
+					.filter((spider) => spider.threatFor === Threat.none)
+					.filter((spider) => targets.findIndex((t) => t !== null && t.id === spider.id) < 0);
+				if (controllableSpiders.length > 0) {
+					const spider = controllableSpiders[0];
+					action = control(spider);
+				}
+			}
+
+			// Common patterns
+			if (mana > 10) {
+				const response = handleAndExtract(hero, closestSpiders);
+				if (response) action = response;
 			}
 
 			// If we did not cast any spell, just move to our target
@@ -293,11 +437,7 @@ while (true) {
 
 		// Execute action
 		if (!action) {
-			action = {
-				type: ActionType.MOVE,
-				x: defaultPosition.x,
-				y: defaultPosition.y,
-			};
+			action = { type: ActionType.MOVE, x: defaultPosition.x, y: defaultPosition.y };
 		}
 		if (action.type === ActionType.WAIT) {
 			console.log("WAIT");
@@ -311,6 +451,7 @@ while (true) {
 			} else {
 				console.log(`SPELL ${action.spell} ${action.entity}`);
 			}
+			mana -= 10;
 		}
 
 		// TODO Recalculate Protector/Agent ratio (round based ?)
