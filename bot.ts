@@ -153,50 +153,54 @@ const byHeroDistance = (hero: Entity) => (a: Entity, b: Entity) => {
 
 // * Common patterns
 
-/** Other order
-	// Cast Wind spell to pushable spiders if there is more than 1
+// Older version with different danger and extract order
+function handleAndExtract_v0(hero: Entity, closestSpiders: Entity[], hasAction: boolean) {
 	if (closestSpiders.length > 0) {
-		const dangerSpiders = closestSpiders
-			.filter(spider => distance(hero, spider) <= WIND_RANGE)
-			.filter(spider => !spider.willPush);
-		if (dangerSpiders.length > 1) {
-			action = push(dangerSpiders[0]);
+		// Cast Wind spell to pushable spiders if there is more than 1
+		if (closestSpiders.length > 0) {
+			const dangerSpiders = closestSpiders
+				.filter((spider) => distance(hero, spider) <= WIND_RANGE)
+				.filter((spider) => !spider.willPush);
+			if (dangerSpiders.length > 1) {
+				return push(dangerSpiders);
+			}
 		}
-	}
 
-	// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
-	if (!action) {
-		const dangerSpiders = closestSpiders
-			.filter(spider => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
-			.filter(spider => distance(hero, spider) <= CONTROL_RANGE)
-			.filter(spider => controlledSpiders.findIndex(cs => cs.id == spider.id) < 0);
-		if (dangerSpiders.length > 0) {
-			action = control(dangerSpiders[0]);
+		// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
+		if (!hasAction) {
+			const dangerSpiders = closestSpiders
+				.filter((spider) => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
+				.filter((spider) => distance(hero, spider) <= CONTROL_RANGE)
+				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0);
+			if (dangerSpiders.length > 0) {
+				return control(dangerSpiders[0]);
+			}
 		}
-	}
 
-	// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
-	if (!action) {
-		const dangerSpiders = closestSpiders
-			.filter(spider => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
-			.filter(spider => distance(hero, spider) <= CONTROL_RANGE)
-			.filter(spider => controlledSpiders.findIndex(cs => cs.id == spider.id) < 0);
-		if (dangerSpiders.length > 0) {
-			action = control(dangerSpiders[0]);
+		// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
+		if (!hasAction) {
+			const dangerSpiders = closestSpiders
+				.filter((spider) => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
+				.filter((spider) => distance(hero, spider) <= CONTROL_RANGE)
+				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0);
+			if (dangerSpiders.length > 0) {
+				return control(dangerSpiders[0]);
+			}
 		}
-	}
 
-	// Cast Control spell to really close spiders
-	if (closestSpiders.length > 0) {
-		const dangerSpiders = closestSpiders
-			.filter(spider => spider.distance <= CLOSE_SPIDER_THREAT_CONTROL_THRESHOLD)
-			.filter(spider => distance(hero, spider) <= CONTROL_RANGE)
-			.filter(spider => controlledSpiders.findIndex(cs => cs.id == spider.id) < 0);
-		if (dangerSpiders.length > 0) {
-			action = control(dangerSpiders[0]);
+		// Cast Control spell to really close spiders
+		if (closestSpiders.length > 0) {
+			const dangerSpiders = closestSpiders
+				.filter((spider) => spider.distance <= CLOSE_SPIDER_DANGER_THRESHOLD)
+				.filter((spider) => distance(hero, spider) <= CONTROL_RANGE)
+				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0);
+			if (dangerSpiders.length > 0) {
+				return control(dangerSpiders[0]);
+			}
 		}
 	}
-*/
+	return undefined;
+}
 
 function handleAndExtract(hero: Entity, closestSpiders: Entity[]) {
 	if (closestSpiders.length > 0) {
@@ -336,7 +340,8 @@ while (true) {
 
 			// Common patterns
 			if (mana > 10) {
-				const response = handleAndExtract(hero, closestSpiders);
+				const response = handleAndExtract_v0(hero, closestSpiders, action !== undefined);
+				// const response = handleAndExtract(hero, closestSpiders);
 				if (response) action = response;
 			}
 
@@ -425,7 +430,8 @@ while (true) {
 
 			// Common patterns
 			if (mana > 10) {
-				const response = handleAndExtract(hero, closestSpiders);
+				const response = handleAndExtract_v0(hero, closestSpiders, action !== undefined);
+				// const response = handleAndExtract(hero, closestSpiders);
 				if (response) action = response;
 			}
 
