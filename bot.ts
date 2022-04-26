@@ -298,7 +298,7 @@ while (true) {
 	);
 
 	// Actions
-	const targets: Entity[] = [];
+	const turnTargets: Entity[] = [];
 	for (let i = 0; i < heroesPerPlayer; i++) {
 		const hero = heroes[i];
 		let action: Action | undefined;
@@ -312,20 +312,20 @@ while (true) {
 			// If there is no threatening spiders...
 			if (threatSpiders.length == 0) {
 				// ... select an already targeted
-				if (targets.length > 0 /* && isCloseEnough(hero, targets[0]) */) {
-					target = targets[0];
+				if (turnTargets.length > 0 /* && isCloseEnough(hero, turnTargets[0]) */) {
+					target = turnTargets[0];
 					action = move(target);
 				}
 				// ... or the closest one
 				else if (closestSpiders.length > 0 && isCloseEnough(hero, closestSpiders[0])) {
 					target = closestSpiders.sort(byHeroDistance(hero)).splice(0, 1)[0];
 					action = move(target);
-					targets.push(target);
+					turnTargets.push(target);
 				}
 			}
 			// If there is a really close already targeted spider
-			if (targets.length > 0) {
-				const spider = targets.sort(byHeroDistance(hero))[0];
+			if (turnTargets.length > 0) {
+				const spider = turnTargets.sort(byHeroDistance(hero))[0];
 				if (spider.distance < CLOSE_SPIDER_REACH && isCloseEnough(hero, spider)) {
 					target = spider;
 					action = move(spider);
@@ -335,7 +335,7 @@ while (true) {
 			if (!action && threatSpiders.length > 0) {
 				target = threatSpiders.splice(0, 1)[0];
 				action = move(target);
-				targets.push(target);
+				turnTargets.push(target);
 			}
 
 			// Common patterns
@@ -358,7 +358,7 @@ while (true) {
 			// Check if we already have a target
 			let target = targets[i];
 			// Cleanup dead entities
-			if (target && entities.findIndex((e) => e.id == target.id) < 0) {
+			if (target && entities.findIndex((e) => e.id == target!.id) < 0) {
 				targets[i] = null;
 				target = null;
 			}
@@ -393,7 +393,7 @@ while (true) {
 				// -- or when it's reached again
 				let destination: Position | undefined;
 				if (randomDestination[i]) {
-					destination = randomDestination[i];
+					destination = randomDestination[i]!;
 					if (distance(hero, destination) < RANDOM_CLOSE) {
 						destination = undefined;
 						randomDestination[i] = null;
@@ -407,7 +407,7 @@ while (true) {
 					randomMiddle.x += Math.round(Math.random() * 5000 - 2500);
 					randomMiddle.y += Math.round(Math.random() * 5000 - 2500);
 					randomDestination[i] = randomMiddle;
-					destination = randomDestination[i];
+					destination = randomDestination[i]!;
 				}
 				if (!destination) {
 					destination = mapMiddle;
@@ -436,8 +436,10 @@ while (true) {
 			}
 
 			// If we did not cast any spell, just move to our target
-			if (!action) {
+			if (!action && target) {
 				action = move(target);
+			} else {
+				action = move(mapMiddle);
 			}
 		}
 
