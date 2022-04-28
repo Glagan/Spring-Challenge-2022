@@ -163,6 +163,7 @@ const zones: [Position, Position, Position] = [
 	{ x: 6640, y: 1760 }, // Top
 	{ x: 1950, y: 6500 }, // Bottom
 ];
+const enemyAttackPoint = { x: 5000, y: 4700 };
 if (!baseIsAtZero) {
 	zones[0] = { x: base.x - zones[0].x, y: base.y - zones[0].y };
 	zones[1] = { x: base.x - zones[1].x, y: base.y - zones[1].y };
@@ -170,10 +171,14 @@ if (!baseIsAtZero) {
 } else {
 	enemyCorners[0] = { x: enemyBase.x - enemyCorners[0].x, y: enemyBase.y - enemyCorners[0].y };
 	enemyCorners[1] = { x: enemyBase.x - enemyCorners[1].x, y: enemyBase.y - enemyCorners[1].y };
+	enemyAttackPoint.x = enemyBase.x - enemyAttackPoint.x;
+	enemyAttackPoint.y = enemyBase.y - enemyAttackPoint.y;
 }
 const shouldBeInZone: HeroRanking = [0, 1, 2];
 let enemyCanAttack: boolean = false;
 let enemyDoShield: boolean = false;
+const currentNoActionDestionation: [Position, Position, Position] = [...zones];
+const lastNoActionChange: [number, number, number] = [0, 0, 0];
 
 // * Utilities
 
@@ -436,14 +441,30 @@ while (true) {
 			}
 		}
 
-		// * Remove enemies
-		if (underAttack && hero.shieldLife == 0) {
-			for (const enemy of attackingEnemies) {
-				if (distance(hero, enemy) < CONTROL_RANGE) {
-					action = shield(hero);
-					lockedAction = true;
-					break;
+		// * Handle enemies
+		if (underAttack) {
+			if (hero.shieldLife == 0) {
+				for (const enemy of attackingEnemies) {
+					if (distance(hero, enemy) < CONTROL_RANGE) {
+						action = shield(hero);
+						lockedAction = true;
+						break;
+					}
 				}
+			} else if (attackingEnemies.length > 0) {
+				lockedAction = true;
+				for (const enemy of attackingEnemies) {
+					if (distance(hero, enemy) <= WIND_RANGE && !enemy.isControlled && !enemy.willControl) {
+						action = push([enemy], enemyBase);
+						attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
+						break;
+					} else if (distance(hero, enemy) <= WIND_RANGE && !enemy.isControlled && !enemy.willControl) {
+						action = control(enemy, enemyBase);
+						attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
+						break;
+					}
+				}
+				if (action) lockedAction = true;
 			}
 		}
 
@@ -460,18 +481,32 @@ while (true) {
 		const heroCloseSpiders = visibleSpiders.filter((s) => s.threatFor !== Threat.opponent);
 		const closeKillable = heroCloseSpiders.filter(killable(hero));
 		if (!lockedAction && closeKillable.length > 0) {
-			// TODO Select centroid with the largest amount of killable spiders
-			const group = biggestCentroids(closeKillable);
-			if (group) {
+			const groups = biggestCentroids(closeKillable);
+			if (groups) {
 				// Sort groups to focus the biggest one and the closest one
-				const biggestGroup = group.sort((a, b) => {
-					if (a.entities.length > b.entities.length) return 1;
-					if (a.entities.length < b.entities.length) return -1;
+				const biggestGroup = groups.sort((a, b) => {
+					const aOnlyKillable = a.entities.filter(killable(hero));
+					const bOnlyKillable = b.entities.filter(killable(hero));
+					if (aOnlyKillable.length > bOnlyKillable.length) return 1;
+					if (aOnlyKillable.length < bOnlyKillable.length) return -1;
 					const aDistance = distance(hero, a.center);
 					const bDistance = distance(hero, b.center);
 					return aDistance - bDistance;
 				});
 				action = move(biggestGroup[0].center);
+			}
+		}
+
+		// * Shield undefusable bombs
+		if (!lockedAction && mana > 20) {
+			const superBombs = visibleSpiders
+				.filter((s) => s.shieldLife === 0 && !s.willShield)
+				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
+				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
+			if (superBombs.length > 0) {
+				const bestSuperBomb = superBombs.sort(toPosition(enemyBase))[0];
+				action = shield(bestSuperBomb);
+				lockedAction = true;
 			}
 		}
 
@@ -481,7 +516,7 @@ while (true) {
 			const pushableSpiders = spiders
 				.filter(inRange(hero, WIND_RANGE))
 				.filter(inRange(enemyBase, WIND_BOMB_RANGE))
-				.filter((s) => s.shieldLife === 0 && !s.willPush);
+				.filter((s) => s.shieldLife === 0);
 			if (pushableSpiders.length > 1) {
 				action = push(pushableSpiders, enemyBase);
 			}
@@ -490,13 +525,15 @@ while (true) {
 				(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl
 			);
 			if (controllableSpiders.length > 0) {
-				const uselessOrDanger = controllableSpiders.filter(
-					(spider) =>
-						spider.health >= 15 &&
-						(spider.threatFor === Threat.self ||
-							(spider.threatFor === Threat.none && killable(hero)(spider)))
-				);
-				// TODO Sort by remainingRounds
+				const uselessOrDanger = controllableSpiders
+					.filter(
+						(spider) =>
+							spider.health >= 15 &&
+							(spider.threatFor === Threat.self ||
+								(spider.threatFor === Threat.none && killable(hero)(spider)))
+					)
+					.map((spider) => ({ ...spider, remaining: roundsToLeaveMap(spider, spider.speed) }))
+					.sort((a, b) => a.remaining - b.remaining);
 				const mostXSpider = uselessOrDanger[0];
 				// Control to the closest corner, to avoid sending everything to the front
 				if (uselessOrDanger.length > 0) {
@@ -513,25 +550,22 @@ while (true) {
 			}
 		}
 
-		// * Shield undefusable bombs
-		// TODO Fix filter or something ? Check that it works
-		if (!lockedAction && mana > 20) {
-			const superBombs = spiders
-				.filter(inRange(hero, SHIELD_RANGE))
-				.filter((s) => s.shieldLife === 0 && !s.willShield && s.threatFor === Threat.opponent)
-				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
-				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
-			if (superBombs.length > 0) {
-				const bestSuperBomb = superBombs.sort(toPosition(enemyBase))[0];
-				action = control(bestSuperBomb, enemyBase);
+		// * Default action
+		if (!action) {
+			if (lastNoActionChange[i] <= 0) {
+				if (distance(hero, zones[i]) < HERO_VIEW) {
+					currentNoActionDestionation[i] = enemyAttackPoint;
+				} else {
+					currentNoActionDestionation[i] = zones[i];
+				}
+				lastNoActionChange[i] = 5;
+			} else {
+				lastNoActionChange[i] -= 1;
 			}
+			action = move(currentNoActionDestionation[i]);
 		}
 
 		// * Execute action
-		if (!action) {
-			// TODO If close enough to zones[i] move in a random position
-			action = move(zones[i]);
-		}
 		let playAction: string = "";
 		if (action.type === ActionType.WAIT) {
 			playAction = "WAIT";
