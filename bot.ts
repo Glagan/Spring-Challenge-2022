@@ -28,8 +28,7 @@ type Entity = Position & {
 	shieldLife: number;
 	isControlled: boolean;
 	health: number;
-	vx: number;
-	vy: number;
+	speed: Position;
 	nearBase: boolean;
 	threatFor: Threat;
 	distance: number;
@@ -40,10 +39,11 @@ type Entity = Position & {
 
 type HeroRanking = [number, number, number];
 
-type DangerGroup = {
-	assigned: false;
+type CentroidGroup = {
+	assigned: boolean;
 	entities: Entity[];
 	center: Position;
+	distances: HeroRanking;
 	closest: HeroRanking;
 };
 
@@ -76,6 +76,7 @@ type MoveAction = Action &
 
 type SpellAction = Action & {
 	type: ActionType.SPELL;
+	spell: Spell;
 };
 
 type PushAction = SpellAction &
@@ -94,25 +95,26 @@ type ControlAction = SpellAction &
 		entity: number;
 	};
 
-type AnyAction = WaitAction | MoveAction | SpellAction | PushAction | ShieldAction | ControlAction;
+type AnyAction = WaitAction | MoveAction | PushAction | ShieldAction | ControlAction;
 
 // * Constants
 
 const FOG_BASE = 36000000; // 6000 * 6000
 const HERO_VIEW = 4840000; // 2200 * 2200
 const WIND_RANGE = 1638400; // 1280 * 1280
-const CONTROL_RANGE = 4840000; // 2200 * 2200
+const CONTROL_RANGE = HERO_VIEW; // 2200 * 2200
 const SHIELD_RANGE = CONTROL_RANGE;
-const BARYCENTER_RADIUS = 2560000; // 1600 * 1600
+const CENTROID_RADIUS = 2560000; // 1600 * 1600
+const BOUNDARY_X = 17630;
+const BOUNDARY_Y = 9000;
 
 // * Utilities
 
 function distance(e: Entity | Position, e2: Entity | Position): number {
 	// return Math.sqrt((Math.pow(x2 - x, 2)) + (Math.pow(y2 - y, 2)))
-	return (
-		((e2 as Position).x - (e as Position).x) * ((e2 as Position).x - (e as Position).x) +
-		((e2 as Position).y - (e as Position).y) * ((e2 as Position).y - (e as Position).y)
-	);
+	const a = e.x - e2.x;
+	const b = e.y - e2.y;
+	return a * a + b * b;
 }
 
 function distanceUnit(unit: number) {
@@ -145,7 +147,11 @@ function push(entities: Entity[]): PushAction {
 const inputs: string[] = readline().split(" ");
 const base: Position = { x: parseInt(inputs[0]), y: parseInt(inputs[1]) }; // The corner of the map representing your base
 const baseIsAtZero = base.x === 0;
-const enemyBase: Position = { x: baseIsAtZero ? 17630 : 0, y: baseIsAtZero ? 9000 : 0 };
+const enemyBase: Position = { x: baseIsAtZero ? BOUNDARY_X : 0, y: baseIsAtZero ? BOUNDARY_Y : 0 };
+const enemyCorners: [Position, Position] = [
+	{ x: 400, y: 4500 },
+	{ x: 4500, y: 400 },
+];
 const heroesPerPlayer: number = parseInt(readline()); // Always 3
 const zones: [Position, Position, Position] = [
 	{ x: 5000, y: 4700 }, // Center
@@ -156,6 +162,9 @@ if (!baseIsAtZero) {
 	zones[0] = { x: base.x - zones[0].x, y: base.y - zones[0].y };
 	zones[1] = { x: base.x - zones[1].x, y: base.y - zones[1].y };
 	zones[2] = { x: base.x - zones[2].x, y: base.y - zones[2].y };
+} else {
+	enemyCorners[0] = { x: enemyBase.x - enemyCorners[0].x, y: enemyBase.y - enemyCorners[0].y };
+	enemyCorners[1] = { x: enemyBase.x - enemyCorners[1].x, y: enemyBase.y - enemyCorners[1].y };
 }
 const shouldBeInZone: HeroRanking = [0, 1, 2];
 let enemyCanAttack: boolean = false;
@@ -164,19 +173,103 @@ let enemyDoShield: boolean = false;
 // * Utilities
 
 // sort(byHeroDistance(hero))
-const byHeroDistance = (hero: Entity) => (a: Entity, b: Entity) => {
-	return distance(hero, a) - distance(hero, b);
-};
+function byHeroDistance(hero: Entity) {
+	return function (a: Entity, b: Entity) {
+		return distance(hero, a) - distance(hero, b);
+	};
+}
 
 // sort(byDistance)
-const byDistance = (a: Entity, b: Entity) => {
+function byDistance(a: Entity, b: Entity) {
 	return a.distance - b.distance;
-};
+}
 
 // filter(notIn(entities))
-const notIn = (other: Entity[]) => (a: Entity) => {
-	return other.findIndex((b) => b.id === a.id) < 0;
-};
+function notIn(other: Entity[]) {
+	return function (a: Entity) {
+		return other.findIndex((b) => b.id === a.id) < 0;
+	};
+}
+
+// filter(visible(hero))
+function visible(hero: Entity) {
+	return function (a: Entity) {
+		return distance(a, hero) < HERO_VIEW;
+	};
+}
+
+function centroid(positions: Position[]): Position {
+	const n = positions.length;
+	const n1 = 1 / n;
+	const position = { x: 0, y: 0 };
+	for (let index = 0; index < n; index++) {
+		position.x += positions[index].x;
+		position.y += positions[index].y;
+	}
+	position.x = Math.round(n1 * position.x);
+	position.y = Math.round(n1 * position.y);
+	return position;
+}
+
+function biggestCentroids(entities: Entity[]) {
+	// Create a group of entities for each entity as a starting point
+	// And select the group of groups with the biggest average
+	let bestGroupEntities: Entity[][] = [];
+	let groupAverage = -1;
+	for (const entity of entities) {
+		// Start with the current entity
+		const entitiesCopy = [
+			{ ...entity, used: false },
+			...entities.filter((o) => o.id != entity.id).map((s) => ({ ...s, used: false })),
+		];
+		const currentGroup: Entity[][] = [];
+
+		// Generate groups
+		for (const otherEntity of entitiesCopy) {
+			if (otherEntity.used) continue;
+			const closeEntities = entitiesCopy.filter(
+				(other) => !other.used && distance(otherEntity, other) < CENTROID_RADIUS
+			);
+			if (closeEntities.length > 0) {
+				for (const entity of closeEntities) {
+					entity.used = true;
+				}
+				currentGroup.push(closeEntities);
+			}
+		}
+
+		// Check if it's better than the current one and save it if so
+		if (currentGroup.length > 0) {
+			const currentWeight =
+				currentGroup.reduce((carry, group) => {
+					return carry + group.length;
+				}, 0) / currentGroup.length;
+			if (currentWeight > groupAverage) {
+				bestGroupEntities = currentGroup;
+			}
+		}
+	}
+	if (bestGroupEntities.length > 0) {
+		return bestGroupEntities.map((entities) => {
+			return {
+				entities,
+				center: entities.length > 1 ? centroid(entities) : { x: entities[0].x, y: entities[0].y },
+			};
+		});
+	}
+	return undefined;
+}
+
+function roundsToMapLeave(start: Position, speed: Position) {
+	let rounds = 0;
+	const p = { ...start };
+	while (p.x > 0 && p.x < BOUNDARY_X && p.y > 0 && p.y < BOUNDARY_Y) {
+		p.x += speed.x;
+		p.y += speed.y;
+		rounds += 1;
+	}
+	return rounds;
+}
 
 // * Patterns
 
@@ -248,8 +341,7 @@ while (true) {
 			shieldLife: parseInt(inputs[4]), // Count down until shield spell fades
 			isControlled: parseInt(inputs[5]) == 1, // Equals 1 when this entity is under a control spell
 			health: parseInt(inputs[6]), // Remaining health of this monster
-			vx: parseInt(inputs[7]), // Trajectory of this monster
-			vy: parseInt(inputs[8]),
+			speed: { x: parseInt(inputs[7]), y: parseInt(inputs[8]) }, // Trajectory of this monster
 			nearBase: parseInt(inputs[9]) == 1, // 0=monster with no target yet, 1=monster targeting a base
 			threatFor: parseInt(inputs[10]), // Given this monster's trajectory, is it a threat to 1=your base, 2=your opponent's base, 0=neither
 			distance: 0,
@@ -274,83 +366,114 @@ while (true) {
 	// * Create group of danger spiders that heroes can kill
 	// They are calculated on each turns to update automatically and balance heroes if needed
 	const dangerStartTime = +new Date();
-	let dangerGroups: DangerGroup[] = [];
+	let dangerGroups: CentroidGroup[] = [];
 	if (dangerSpiders.length > 0) {
-		// Create a group of spiders for each spiders as a starting point
-		// And select the group of groups with the biggest average
-		let dangerGroupAverage = -1;
-		for (const spider of dangerSpiders) {
-			// Start with the current spider
-			const dangerSpidersCopy = [
-				{ ...spider, used: false },
-				...dangerSpiders.filter((o) => o.id != spider.id).map((s) => ({ ...s, used: false })),
-			];
-			const currentSpiderDangerGroups: DangerGroup[] = [];
-
-			// Generate groups
-			for (const dangerSpider of dangerSpidersCopy) {
-				if (dangerSpider.used) continue;
-				const closeSpiders = dangerSpidersCopy.filter(
-					(other) => !other.used && distance(dangerSpider, other) < BARYCENTER_RADIUS
-				);
-				if (closeSpiders.length > 0) {
-					for (const spider of closeSpiders) {
-						spider.used = true;
-					}
-					currentSpiderDangerGroups.push({
-						assigned: false,
-						entities: closeSpiders,
-						center: { x: 0, y: 0 },
-						closest: [0, 0, 0],
-					});
-				}
-			}
-
-			// Check if it's better than the current one and save it if so
-			if (currentSpiderDangerGroups.length > 0) {
-				const currentWeight =
-					currentSpiderDangerGroups.reduce((carry, group) => {
-						return carry + group.entities.length;
-					}, 0) / currentSpiderDangerGroups.length;
-				if (currentWeight > dangerGroupAverage) {
-					dangerGroups = currentSpiderDangerGroups;
-				}
-			}
-		}
-	}
-	if (dangerGroups.length > 0) {
-		for (const dangerGroup of dangerGroups) {
-			if (dangerGroup.entities.length > 1) {
-				// TODO Barycenter of the danger group entities
-			} else {
-				dangerGroup.center = { x: dangerGroup.entities[0].x, y: dangerGroup.entities[0].y };
-			}
-			const heroDistances = [
-				distance(heroes[0], dangerGroup.center),
-				distance(heroes[1], dangerGroup.center),
-				distance(heroes[2], dangerGroup.center),
-			];
-			dangerGroup.closest = [...heroDistances].sort().map((v) => heroDistances.indexOf(v)) as HeroRanking;
+		const groups = biggestCentroids(dangerSpiders);
+		if (groups) {
+			dangerGroups = groups.map((group) => {
+				const heroDistances: HeroRanking = [
+					distance(heroes[0], group.center),
+					distance(heroes[1], group.center),
+					distance(heroes[2], group.center),
+				];
+				return {
+					assigned: false,
+					...group,
+					distances: heroDistances,
+					closest: [...heroDistances]
+						.sort((a, b) => a - b)
+						.map((v) => heroDistances.indexOf(v)) as HeroRanking,
+				};
+			});
 		}
 	}
 	const dangerEndTime = +new Date();
 	console.error(`Danger groups ${dangerEndTime - dangerStartTime}ms`);
-	console.error("Danger groups", dangerGroups);
 
 	// * Heroes loop
 	for (let i = 0; i < heroesPerPlayer; i++) {
 		const heroStartTime = +new Date();
 		const hero = heroes[i];
+		let action: AnyAction | undefined;
 
-		// TODO Check danger group
-		// TODO Multiple options to kill danger spider -> control, push or just kill it
+		// * Danger groups
+		let danger = false;
+		const unassignedDanger = dangerGroups.filter((g) => !g.assigned);
+		if (unassignedDanger.length > 0) {
+			const maybeAssignedGroup = unassignedDanger.find((group) => group.closest[0] === i);
+			if (maybeAssignedGroup) {
+				// TODO check if the danger group can be extracted -> push with wind out the base
+				// TODO check if the danger group can be extracted -> control
+				maybeAssignedGroup.assigned = true;
+				danger = true;
+				action = move(maybeAssignedGroup.center);
+			}
+		}
 
-		// TODO Nothing to do -> barycenter to kill spiders
-		// TODO No spiders -> move to zone
+		// * Farm
+		// TODO Ignore threat spiders for enemy
+		const heroCloseSpiders = spiders.filter(visible(hero));
+		if (heroCloseSpiders.length > 0) {
+			const group = biggestCentroids(heroCloseSpiders);
+			if (group) {
+				const biggestGroup = group.sort((a, b) => {
+					if (a.entities.length > b.entities.length) return 1;
+					if (a.entities.length < b.entities.length) return -1;
+					const aDistance = distance(hero, a.center);
+					const bDistance = distance(hero, b.center);
+					return aDistance - bDistance;
+				});
+				action = move(biggestGroup[0].center);
+			}
+		}
 
-		let action = move(zones[i]);
+		// * Send bombs
+		if (!danger && mana > 40) {
+			// TODO Check if spiders in WIND_RANGE is more than > 2 and push to enemy center if true -- else control
+			const controllableSpiders = heroCloseSpiders.filter(
+				(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl
+			);
+			if (controllableSpiders.length > 0) {
+				const uselessOrDanger = controllableSpiders.filter(
+					(spider) =>
+						spider.threatFor === Threat.self ||
+						(spider.threatFor === Threat.none &&
+							((spider) => {
+								const remainingRounds = roundsToMapLeave(spider, spider.speed);
+								// TODO + add roundsToReach
+								const roundsToKill = spider.health / 2;
+								return roundsToKill > remainingRounds;
+							})(spider))
+				);
+				// TODO Sort by remainingRounds
+				if (uselessOrDanger.length > 0) {
+					action = control(uselessOrDanger[0]);
+				}
+			}
+		}
+
+		// * Execute action
+		if (!action) {
+			// TODO If close enough to zones[i] move in a random position
+			action = move(zones[i]);
+		}
+		let playAction: string = "";
+		if (action.type === ActionType.WAIT) {
+			playAction = "WAIT";
+		} else if (action.type === ActionType.MOVE) {
+			playAction = `MOVE ${action.x} ${action.y}`;
+		} else {
+			if (action.spell === Spell.WIND) {
+				playAction = `SPELL ${action.spell} ${action.x} ${action.y}`;
+			} else if (action.spell === Spell.CONTROL) {
+				playAction = `SPELL ${action.spell} ${action.entity} ${action.x} ${action.y}`;
+			} else {
+				playAction = `SPELL ${action.spell} ${action.entity}`;
+			}
+			mana -= 10;
+		}
 		const heroEndTime = +new Date();
-		console.log(`MOVE ${action.x} ${action.y} ${heroEndTime - heroStartTime}ms`);
+		console.log(`${playAction} ${heroEndTime - heroStartTime}ms`);
 	}
 
 	// * Debug
