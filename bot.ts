@@ -109,6 +109,7 @@ const CONTROL_EXTRACT_RANGE = 21160000; // 4600 * 4600
 const SHIELD_RANGE = CONTROL_RANGE;
 const SHIELD_MOVEMENT_RANGE = 23040000; // 4800 * 4800 (12 * 400)
 const CENTROID_RADIUS = 2560000; // 1600 * 1600
+const ATTACKING_ENEMY = 64000000; // 8000 * 8000
 const BOUNDARY_X = 17630;
 const BOUNDARY_Y = 9000;
 
@@ -208,7 +209,7 @@ function inRange(position: Position, range: number) {
 	};
 }
 
-function roundsToMapLeave(start: Position, speed: Position) {
+function roundsToLeaveMap(start: Position, speed: Position) {
 	let rounds = 0;
 	const p = { ...start };
 	while (p.x > 0 && p.x < BOUNDARY_X && p.y > 0 && p.y < BOUNDARY_Y) {
@@ -221,10 +222,10 @@ function roundsToMapLeave(start: Position, speed: Position) {
 
 function killable(hero: Entity) {
 	return function (entity: Entity) {
-		const remainingRounds = roundsToMapLeave(entity, entity.speed);
+		const remainingRounds = roundsToLeaveMap(entity, entity.speed);
 		// TODO + add roundsToReach(hero)
 		const roundsToKill = entity.health / 2;
-		return roundsToKill > remainingRounds;
+		return roundsToKill < remainingRounds;
 	};
 }
 
@@ -290,48 +291,6 @@ function biggestCentroids(entities: Entity[]) {
 	return undefined;
 }
 
-// * Patterns
-
-/*function handleAndExtract(hero: Entity, closestSpiders: Entity[]) {
-	if (closestSpiders.length > 0) {
-		// Cast Control spell to really close spiders
-		// -- OR  Cast Wind spell to pushable spiders if there is more than 1
-		{
-			const dangerSpiders = closestSpiders
-				.filter((spider) => spider.distance <= CLOSE_SPIDER_DANGER_THRESHOLD)
-				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0)
-				.filter((spider) => !spider.willPush);
-			const canControl = dangerSpiders.filter((spider) => distance(hero, spider) <= CONTROL_RANGE);
-			const canPush = dangerSpiders.filter((spider) => distance(hero, spider) <= WIND_RANGE);
-			if (canPush.length > 1) {
-				return push(canPush);
-			} else if (canControl.length > 0) {
-				return control(canControl[0]);
-			}
-		}
-
-		// Cast Control spell on spiders that can be extracted from the base but are too far to be pushed
-		// -- OR Cast Wind spell to pushable spiders if there is more than 1
-		{
-			const dangerSpiders = closestSpiders
-				.filter((spider) => controlledSpiders.findIndex((cs) => cs.id == spider.id) < 0)
-				.filter((spider) => !spider.willPush);
-			const canControl = dangerSpiders
-				.filter((spider) => spider.distance >= CLOSE_SPIDER_CONTROL_THRESHOLD)
-				.filter((spider) => distance(hero, spider) <= CONTROL_RANGE);
-			const canPush = dangerSpiders
-				.filter((spider) => spider.distance >= CLOSE_SPIDER_PUSH_THRESHOLD)
-				.filter((spider) => distance(hero, spider) <= WIND_RANGE);
-			if (canPush.length > 1) {
-				return push(canPush);
-			} else if (canControl.length > 0) {
-				return control(canControl[0]);
-			}
-		}
-	}
-	return undefined;
-}*/
-
 // * Game loop
 
 while (true) {
@@ -380,7 +339,6 @@ while (true) {
 	const dangerSpiders = spiders
 		.filter((spider) => spider.nearBase && spider.threatFor === Threat.self)
 		.sort(byDistance);
-	const threatSpiders = spiders.filter((spider) => spider.threatFor == Threat.self).sort(byDistance);
 
 	// * Create group of danger spiders that heroes can kill
 	// They are calculated on each turns to update automatically and balance heroes if needed
@@ -409,6 +367,19 @@ while (true) {
 	const dangerEndTime = +new Date();
 	console.error(`Danger groups ${dangerEndTime - dangerStartTime}ms`);
 
+	// * Check if there is attacking heroes
+	// Silence heroes attacking our base urgently
+	const shieldedUltraDanger = dangerSpiders.find((s) => s.shieldLife > 0);
+	const controlledHeroes = heroes.filter((h) => h.isControlled);
+	let attackingEnemies: Entity[] =
+		shieldedUltraDanger || controlledHeroes.length > 0
+			? enemies
+					.sort(toPosition(base))
+					.filter((e) => e.shieldLife === 0 && !e.willShield)
+					.filter(inRange(base, ATTACKING_ENEMY))
+			: [];
+	const underAttack = attackingEnemies.length > 0;
+
 	// * Heroes loop
 	const allHeroesStartTime = +new Date();
 	for (let i = 0; i < heroesPerPlayer; i++) {
@@ -418,24 +389,30 @@ while (true) {
 
 		// * Danger groups
 		// TODO Check if an enemy is near the base and casting control on our units or shield on spiders
-		let danger = false;
+		let lockedAction = false;
 		const unassignedDanger = dangerGroups.filter((g) => !g.assigned);
 		if (unassignedDanger.length > 0) {
 			const maybeAssignedGroup = unassignedDanger.find((group) => group.closest[0] === i);
 			if (maybeAssignedGroup && maybeAssignedGroup.entities.length > 0) {
 				maybeAssignedGroup.assigned = true;
-				danger = true;
+				lockedAction = true;
 				if (mana >= 10) {
 					// TODO **Always** extract to NOT kill inside the base for wild mana ?
 					// TODO Check if remainingRounds (time to kill until base) is enough or if a spell *is* needed
 					const closestSpider = maybeAssignedGroup.entities.sort(toPosition(base))[0];
 					const centerDistance = distance(base, maybeAssignedGroup.center);
 					const heroDistance = distance(maybeAssignedGroup.center, hero);
+					const controllableSpidersPercentage =
+						maybeAssignedGroup.entities.reduce(
+							(carry, spider) => carry + (spider.shieldLife > 0 ? 0 : 1),
+							0
+						) / maybeAssignedGroup.entities.length;
 					// Push extract or push to stop
 					if (
 						heroDistance < WIND_RANGE &&
-						// TODO Check that *most* spiders can be pushed ?
-						(centerDistance <= CONTROL_RANGE || centerDistance >= WIND_EXTRACT_RANGE)
+						(centerDistance <= CONTROL_RANGE || centerDistance >= WIND_EXTRACT_RANGE) &&
+						// Check that at least 75% of the spiders can be pushed ?
+						controllableSpidersPercentage >= 0.75
 					) {
 						action = push(maybeAssignedGroup.entities, enemyBase);
 					}
@@ -459,11 +436,32 @@ while (true) {
 			}
 		}
 
+		// * Remove enemies
+		if (underAttack && hero.shieldLife == 0) {
+			for (const enemy of attackingEnemies) {
+				if (distance(hero, enemy) < CONTROL_RANGE) {
+					action = shield(hero);
+					lockedAction = true;
+					break;
+				}
+			}
+		}
+
+		// * Handle transitions
+		// Control spiders to send them back to the enemy base
+		const visibleSpiders = spiders.filter(visible(hero));
+		const pushableSpiders = visibleSpiders.filter(inRange(hero, WIND_RANGE));
+		if (!lockedAction && pushableSpiders.length > 3) {
+			action = push(pushableSpiders, enemyBase);
+			lockedAction = true;
+		}
+
 		// * Farm
-		// TODO Remove unkillable spiders from centroid calculations
-		const heroCloseSpiders = spiders.filter(visible(hero)).filter((s) => s.threatFor !== Threat.opponent);
-		if (!danger && heroCloseSpiders.length > 0) {
-			const group = biggestCentroids(heroCloseSpiders);
+		const heroCloseSpiders = visibleSpiders.filter((s) => s.threatFor !== Threat.opponent);
+		const closeKillable = heroCloseSpiders.filter(killable(hero));
+		if (!lockedAction && closeKillable.length > 0) {
+			// TODO Select centroid with the largest amount of killable spiders
+			const group = biggestCentroids(closeKillable);
 			if (group) {
 				// Sort groups to focus the biggest one and the closest one
 				const biggestGroup = group.sort((a, b) => {
@@ -478,7 +476,7 @@ while (true) {
 		}
 
 		// * Send bombs
-		if (!danger && mana > 50) {
+		if (!lockedAction && mana > 50) {
 			// If there is multiple spiders push them instead of control one by one
 			const pushableSpiders = spiders
 				.filter(inRange(hero, WIND_RANGE))
@@ -517,7 +515,7 @@ while (true) {
 
 		// * Shield undefusable bombs
 		// TODO Fix filter or something ? Check that it works
-		if (!danger && mana > 20) {
+		if (!lockedAction && mana > 20) {
 			const superBombs = spiders
 				.filter(inRange(hero, SHIELD_RANGE))
 				.filter((s) => s.shieldLife === 0 && !s.willShield && s.threatFor === Threat.opponent)
