@@ -117,6 +117,7 @@ const DEFAULT_NO_SWITCH_AGENT = 20;
 const KEEP_MANA_BEFORE_BOMBS = 80;
 const SEND_ATTACk_TRESHOLD = 10;
 const DEFAULT_NO_SWITCH_TURNS = 20;
+const KEEP_ATTACKING_ROUNDS = 5;
 
 // * Utilities
 
@@ -158,6 +159,10 @@ const inputs: string[] = readline().split(" ");
 const base: Position = { x: parseInt(inputs[0]), y: parseInt(inputs[1]) }; // The corner of the map representing your base
 const baseIsAtZero = base.x === 0;
 const enemyBase: Position = { x: baseIsAtZero ? BOUNDARY_X : 0, y: baseIsAtZero ? BOUNDARY_Y : 0 };
+const mapCorners: [Position, Position] = [
+	{ x: BOUNDARY_X, y: 0 },
+	{ x: 0, y: BOUNDARY_Y },
+];
 const enemyCorners: [Position, Position] = [
 	{ x: 400, y: 4500 },
 	{ x: 4500, y: 400 },
@@ -183,8 +188,8 @@ const shouldBeInZone: HeroRanking = [0, 1, 2];
 let enemyCanAttack: boolean = false;
 let enemyDoShield: boolean = false;
 const tmpDestination: [Position, Position, Position] = [...zones];
-const lastNoActionChange: [number, number, number] = [0, 0, 0];
 let sendSpiders = 0;
+const attackedInLastRounds: [number, number, number] = [0, 0, 0];
 
 // * Utilities
 
@@ -217,7 +222,7 @@ function visible(hero: Entity) {
 // filter(inRange(position, distance))
 function inRange(position: Position, range: number) {
 	return function (a: Entity) {
-		return distance(a, position) < range;
+		return distance(a, position) <= range;
 	};
 }
 
@@ -375,6 +380,7 @@ while (true) {
 		const heroStartTime = +new Date();
 		const hero = heroes[i];
 		let action: AnyAction | undefined;
+		attackedInLastRounds[i] = attackedInLastRounds[i] > 0 ? attackedInLastRounds[i] - 1 : 0;
 
 		// * Danger groups
 		// * Only the first hero protect
@@ -407,6 +413,7 @@ while (true) {
 					// Control extract or control to stop
 					else if (
 						heroDistance < CONTROL_RANGE &&
+						closestSpider.threatFor === Threat.self &&
 						closestSpider.health > 10 &&
 						!closestSpider.isControlled &&
 						closestSpider.shieldLife === 0 &&
@@ -438,17 +445,29 @@ while (true) {
 			} else if (attackingEnemies.length > 0) {
 				lockedAction = true;
 				for (const enemy of attackingEnemies) {
-					if (distance(hero, enemy) <= WIND_RANGE && !enemy.isControlled && !enemy.willControl) {
+					const canBeMoved = enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl;
+					if (!canBeMoved) continue;
+					if (distance(hero, enemy) <= WIND_RANGE) {
 						action = push([enemy], enemyBase);
 						attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
 						break;
-					} else if (distance(hero, enemy) <= WIND_RANGE && !enemy.isControlled && !enemy.willControl) {
+					} else if (distance(hero, enemy) <= WIND_RANGE) {
 						action = control(enemy, enemyBase);
 						attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
 						break;
 					}
 				}
 				if (action) lockedAction = true;
+			}
+		} else if (i === 0) {
+			const visibleEnemies = enemies
+				.filter(inRange(hero, HERO_VIEW))
+				.filter((enemy) => enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl)
+				.sort(byDistance);
+			if (visibleEnemies.length > 0) {
+				const closestCorner =
+					distance(visibleEnemies[0], mapCorners[0]) < distance(visibleEnemies[0], mapCorners[1]) ? 0 : 1;
+				action = control(visibleEnemies[0], mapCorners[closestCorner]);
 			}
 		}
 
@@ -483,31 +502,34 @@ while (true) {
 
 		// * Shield undefusable bombs
 		// TODO Actually shield spiders when there is a lot of them inside the enemy base
-		if (!lockedAction && mana > 20) {
+		if (i > 0 && mana > 20) {
 			const superBombs = visibleSpiders
-				.filter((s) => s.shieldLife === 0 && !s.willShield)
+				.filter((s) => s.shieldLife === 0 && !s.willShield && s.health > 15)
 				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
 				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
 			if (superBombs.length > 0) {
 				const bestSuperBomb = superBombs.sort(byDistanceToPosition(enemyBase))[0];
 				action = shield(bestSuperBomb);
 				lockedAction = true;
+				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 			}
 		}
 
 		// * Send directly to the enemy base
-		if (i > 0 && mana > 20) {
+		if (i > 0 && mana > 20 && distance(hero, heroes[2]) <= HERO_VIEW) {
 			// Check if there is at least 1 spider that is close enough to the enemy base
 			const sendableSpiders = visibleSpiders.filter(inRange(enemyBase, SEND_MINIMUM));
 			if (sendableSpiders.length > 0) {
 				lockedAction = true;
 				action = push(sendableSpiders, enemyBase);
 				otherHeroIsAttacking = sendableSpiders;
+				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 			}
 		}
 		if (otherHeroIsAttacking) {
 			lockedAction = true;
 			action = push(otherHeroIsAttacking, enemyBase);
+			attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 		}
 
 		// * Send bombs
@@ -520,56 +542,55 @@ while (true) {
 			if (pushableSpiders.length > 1) {
 				action = push(pushableSpiders, enemyBase);
 				sendSpiders += pushableSpiders.length;
+				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 			}
 			// Else control them to an enemy base corner
-			const controllableSpiders = heroCloseSpiders.filter(
-				(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl
-			);
-			if (controllableSpiders.length > 0) {
-				const uselessOrDanger = controllableSpiders
-					.filter(
-						(spider) =>
-							spider.health >= 15 &&
-							(spider.threatFor === Threat.self ||
-								(spider.threatFor === Threat.none && killable(hero)(spider)))
-					)
-					.map((spider) => ({ ...spider, remaining: roundsToLeaveMap(spider, spider.speed) }))
-					.sort((a, b) => a.remaining - b.remaining);
-				const mostXSpider = uselessOrDanger[0];
-				// Control to the closest corner, to avoid sending everything to the front
-				if (uselessOrDanger.length > 0) {
-					const cornerDistance = [
-						distance(mostXSpider, enemyCorners[0]),
-						distance(mostXSpider, enemyCorners[1]),
-					];
-					if (cornerDistance[0] < cornerDistance[1]) {
-						action = control(mostXSpider, enemyCorners[0]);
-					} else {
-						action = control(mostXSpider, enemyCorners[1]);
+			else {
+				const controllableSpiders = heroCloseSpiders.filter(
+					(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl
+				);
+				if (controllableSpiders.length > 0) {
+					const uselessOrDanger = controllableSpiders
+						.filter(
+							(spider) =>
+								spider.health >= 15 &&
+								(spider.threatFor === Threat.self ||
+									(spider.threatFor === Threat.none && killable(hero)(spider)))
+						)
+						.map((spider) => ({ ...spider, remaining: roundsToLeaveMap(spider, spider.speed) }))
+						.sort((a, b) => a.remaining - b.remaining);
+					const mostXSpider = uselessOrDanger[0];
+					// Control to the closest corner, to avoid sending everything to the front
+					if (uselessOrDanger.length > 0) {
+						const cornerDistance = [
+							distance(mostXSpider, enemyCorners[0]),
+							distance(mostXSpider, enemyCorners[1]),
+						];
+						if (cornerDistance[0] < cornerDistance[1]) {
+							action = control(mostXSpider, enemyCorners[0]);
+						} else {
+							action = control(mostXSpider, enemyCorners[1]);
+						}
+						sendSpiders += 1;
 					}
-					sendSpiders += 1;
 				}
 			}
 		}
 
-		// TODO Update shouldAttack if in the enemy base and there is no spiders
-
 		// * Default action
 		if (!action) {
-			if (lastNoActionChange[i] <= 0) {
-				if (distance(hero, zones[i]) <= WIND_RANGE) {
-					tmpDestination[i] = i == 0 ? zones[2] : enemyAttackPoint;
-				}
-				if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
-					tmpDestination[i] = i == 0 ? zones[2] : zones[i];
-				}
-				lastNoActionChange[i] = DEFAULT_NO_SWITCH_TURNS;
-			} else {
-				lastNoActionChange[i] -= 1;
+			if (attackedInLastRounds[i] > 0 || distance(hero, zones[i]) <= WIND_RANGE) {
+				tmpDestination[i] = i == 0 ? zones[2] : enemyAttackPoint;
+			}
+			if (attackedInLastRounds[i] <= 0 && distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
+				tmpDestination[i] = i == 0 ? zones[2] : zones[i];
+			}
+			if (i === 0 && distance(hero, zones[2]) <= ATTACK_POINT_RANGE) {
+				tmpDestination[i] = zones[i];
 			}
 			action = move(tmpDestination[i]);
 		} else {
-			tmpDestination[i] = zones[i];
+			tmpDestination[i] = attackedInLastRounds[i] > 0 ? enemyAttackPoint : zones[i];
 		}
 
 		// * Execute action
