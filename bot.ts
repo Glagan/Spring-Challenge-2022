@@ -40,11 +40,8 @@ type Entity = Position & {
 type HeroRanking = [number, number, number];
 
 type CentroidGroup = {
-	assigned: boolean;
 	entities: Entity[];
 	center: Position;
-	distances: HeroRanking;
-	closest: HeroRanking;
 };
 
 type ControlledEntity = Entity & {
@@ -110,8 +107,11 @@ const SHIELD_RANGE = CONTROL_RANGE;
 const SHIELD_MOVEMENT_RANGE = 23040000; // 4800 * 4800 (12 * 400)
 const CENTROID_RADIUS = 2560000; // 1600 * 1600
 const ATTACKING_ENEMY = 64000000; // 8000 * 8000
+const SEND_MINIMUM = 25000000; // 5000 * 5000
 const BOUNDARY_X = 17630;
 const BOUNDARY_Y = 9000;
+const DEFAULT_NO_SWITCH_TURNS = 20;
+const KEEP_MANA_BEFORE_BOMBS = 80;
 
 // * Utilities
 
@@ -160,7 +160,7 @@ const enemyCorners: [Position, Position] = [
 const heroesPerPlayer: number = parseInt(readline()); // Always 3
 const zones: [Position, Position, Position] = [
 	{ x: 5000, y: 4700 }, // Center
-	{ x: 6640, y: 1760 }, // Top
+	{ x: 10000, y: 2200 }, // Top
 	{ x: 1950, y: 6500 }, // Bottom
 ];
 const enemyAttackPoint = { x: 5000, y: 4700 };
@@ -183,7 +183,7 @@ const lastNoActionChange: [number, number, number] = [0, 0, 0];
 // * Utilities
 
 // sort(toPosition(position))
-function toPosition(position: Position) {
+function byDistanceToPosition(position: Position) {
 	return function (a: Entity, b: Entity) {
 		return distance(position, a) - distance(position, b);
 	};
@@ -208,6 +208,7 @@ function visible(hero: Entity) {
 	};
 }
 
+// filter(inRange(position, distance))
 function inRange(position: Position, range: number) {
 	return function (a: Entity) {
 		return distance(a, position) < range;
@@ -342,7 +343,7 @@ while (true) {
 		}
 	}
 	const dangerSpiders = spiders
-		.filter((spider) => spider.nearBase && spider.threatFor === Threat.self)
+		.filter((spider) => spider.distance <= FOG_BASE && spider.threatFor === Threat.self)
 		.sort(byDistance);
 
 	// * Create group of danger spiders that heroes can kill
@@ -351,23 +352,7 @@ while (true) {
 	let dangerGroups: CentroidGroup[] = [];
 	if (dangerSpiders.length > 0) {
 		const groups = biggestCentroids(dangerSpiders);
-		if (groups) {
-			dangerGroups = groups.map((group) => {
-				const heroDistances: HeroRanking = [
-					distance(heroes[0], group.center),
-					distance(heroes[1], group.center),
-					distance(heroes[2], group.center),
-				];
-				return {
-					assigned: false,
-					...group,
-					distances: heroDistances,
-					closest: [...heroDistances]
-						.sort((a, b) => a - b)
-						.map((v) => heroDistances.indexOf(v)) as HeroRanking,
-				};
-			});
-		}
+		if (groups) dangerGroups = groups.sort((a, b) => distance(base, a.center) - distance(base, b.center));
 	}
 	const dangerEndTime = +new Date();
 	console.error(`Danger groups ${dangerEndTime - dangerStartTime}ms`);
@@ -379,13 +364,14 @@ while (true) {
 	let attackingEnemies: Entity[] =
 		shieldedUltraDanger || controlledHeroes.length > 0
 			? enemies
-					.sort(toPosition(base))
+					.sort(byDistanceToPosition(base))
 					.filter((e) => e.shieldLife === 0 && !e.willShield)
 					.filter(inRange(base, ATTACKING_ENEMY))
 			: [];
 	const underAttack = attackingEnemies.length > 0;
 
 	// * Heroes loop
+	let otherHeroIsAttacking: Entity[] | undefined;
 	const allHeroesStartTime = +new Date();
 	for (let i = 0; i < heroesPerPlayer; i++) {
 		const heroStartTime = +new Date();
@@ -393,37 +379,38 @@ while (true) {
 		let action: AnyAction | undefined;
 
 		// * Danger groups
-		// TODO Check if an enemy is near the base and casting control on our units or shield on spiders
+		// * Only the first hero protect
 		let lockedAction = false;
-		const unassignedDanger = dangerGroups.filter((g) => !g.assigned);
-		if (unassignedDanger.length > 0) {
-			const maybeAssignedGroup = unassignedDanger.find((group) => group.closest[0] === i);
-			if (maybeAssignedGroup && maybeAssignedGroup.entities.length > 0) {
-				maybeAssignedGroup.assigned = true;
+		if (i === 0) {
+			if (dangerGroups.length > 0) {
 				lockedAction = true;
+				const mostDangerous = dangerGroups[0];
 				if (mana >= 10) {
-					// TODO **Always** extract to NOT kill inside the base for wild mana ?
+					// Always extract to redirect spiders
 					// TODO Check if remainingRounds (time to kill until base) is enough or if a spell *is* needed
-					const closestSpider = maybeAssignedGroup.entities.sort(toPosition(base))[0];
-					const centerDistance = distance(base, maybeAssignedGroup.center);
-					const heroDistance = distance(maybeAssignedGroup.center, hero);
+					const closestSpider = mostDangerous.entities.sort(byDistanceToPosition(base))[0];
+					const centerDistance = distance(base, mostDangerous.center);
+					const heroDistance = distance(mostDangerous.center, hero);
 					const controllableSpidersPercentage =
-						maybeAssignedGroup.entities.reduce(
-							(carry, spider) => carry + (spider.shieldLife > 0 ? 0 : 1),
-							0
-						) / maybeAssignedGroup.entities.length;
+						mostDangerous.entities.reduce((carry, spider) => carry + (spider.shieldLife > 0 ? 0 : 1), 0) /
+						mostDangerous.entities.length;
+					const averageGroupHealth =
+						mostDangerous.entities.reduce((carry, spider) => carry + spider.health, 0) /
+						mostDangerous.entities.length;
 					// Push extract or push to stop
 					if (
 						heroDistance < WIND_RANGE &&
-						(centerDistance <= CONTROL_RANGE || centerDistance >= WIND_EXTRACT_RANGE) &&
+						(centerDistance <= CONTROL_RANGE ||
+							(centerDistance >= WIND_EXTRACT_RANGE && averageGroupHealth > 8)) &&
 						// Check that at least 75% of the spiders can be pushed ?
 						controllableSpidersPercentage >= 0.75
 					) {
-						action = push(maybeAssignedGroup.entities, enemyBase);
+						action = push(mostDangerous.entities, enemyBase);
 					}
 					// Control extract or control to stop
 					else if (
 						heroDistance < CONTROL_RANGE &&
+						closestSpider.health > 10 &&
 						!closestSpider.isControlled &&
 						closestSpider.shieldLife === 0 &&
 						!closestSpider.willControl &&
@@ -431,12 +418,12 @@ while (true) {
 					) {
 						action = control(closestSpider, enemyBase);
 					} else {
-						action = move(maybeAssignedGroup.center);
+						action = move(mostDangerous.center);
 					}
 				}
 				// Move to attack everybody
 				else {
-					action = move(maybeAssignedGroup.center);
+					action = move(mostDangerous.center);
 				}
 			}
 		}
@@ -504,14 +491,29 @@ while (true) {
 				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
 				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
 			if (superBombs.length > 0) {
-				const bestSuperBomb = superBombs.sort(toPosition(enemyBase))[0];
+				const bestSuperBomb = superBombs.sort(byDistanceToPosition(enemyBase))[0];
 				action = shield(bestSuperBomb);
 				lockedAction = true;
 			}
 		}
 
+		// * Send directly to the enemy base
+		if (i > 0 && mana > 20) {
+			// Check if there is at least 1 spider that is close enough to the enemy base
+			const sendableSpiders = visibleSpiders.filter(inRange(enemyBase, SEND_MINIMUM));
+			if (sendableSpiders.length > 0) {
+				lockedAction = true;
+				action = push(sendableSpiders, enemyBase);
+				otherHeroIsAttacking = sendableSpiders;
+			}
+		}
+		if (otherHeroIsAttacking) {
+			lockedAction = true;
+			action = push(otherHeroIsAttacking, enemyBase);
+		}
+
 		// * Send bombs
-		if (!lockedAction && mana > 50) {
+		if (!lockedAction && mana > KEEP_MANA_BEFORE_BOMBS) {
 			// If there is multiple spiders push them instead of control one by one
 			const pushableSpiders = spiders
 				.filter(inRange(hero, WIND_RANGE))
@@ -552,13 +554,13 @@ while (true) {
 
 		// * Default action
 		if (!action) {
-			if (lastNoActionChange[i] <= 0) {
+			if (i > 0 && lastNoActionChange[i] <= 0) {
 				if (distance(hero, zones[i]) < HERO_VIEW) {
 					currentNoActionDestionation[i] = enemyAttackPoint;
 				} else {
 					currentNoActionDestionation[i] = zones[i];
 				}
-				lastNoActionChange[i] = 5;
+				lastNoActionChange[i] = DEFAULT_NO_SWITCH_TURNS;
 			} else {
 				lastNoActionChange[i] -= 1;
 			}
