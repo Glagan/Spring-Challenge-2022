@@ -106,7 +106,8 @@ const CONTROL_EXTRACT_RANGE = 21160000; // 4600 * 4600
 const SHIELD_RANGE = CONTROL_RANGE;
 const SHIELD_MOVEMENT_RANGE = 23040000; // 4800 * 4800 (12 * 400)
 const CENTROID_RADIUS = 2560000; // 1600 * 1600
-const ATTACKING_ENEMY = 64000000; // 8000 * 8000
+const ATTACKING_ENEMY = 49000000; // 7000 * 7000
+const ATTACKING_ENEMY_RANGE = 64000000; // 8000 * 8000
 const SEND_MINIMUM = 25000000; // 5000 * 5000
 const ATTACK_POINT_RANGE = 640000; // 800 * 800
 const BOUNDARY_X = 17630;
@@ -114,6 +115,8 @@ const BOUNDARY_Y = 9000;
 const DEFAULT_NO_SWITCH_PROTECTOR = 5;
 const DEFAULT_NO_SWITCH_AGENT = 20;
 const KEEP_MANA_BEFORE_BOMBS = 80;
+const SEND_ATTACk_TRESHOLD = 10;
+const DEFAULT_NO_SWITCH_TURNS = 20;
 
 // * Utilities
 
@@ -180,6 +183,8 @@ const shouldBeInZone: HeroRanking = [0, 1, 2];
 let enemyCanAttack: boolean = false;
 let enemyDoShield: boolean = false;
 const tmpDestination: [Position, Position, Position] = [...zones];
+const lastNoActionChange: [number, number, number] = [0, 0, 0];
+let sendSpiders = 0;
 
 // * Utilities
 
@@ -343,9 +348,7 @@ while (true) {
 			enemies.push(entity);
 		}
 	}
-	const dangerSpiders = spiders
-		.filter((spider) => spider.distance <= FOG_BASE && spider.threatFor === Threat.self)
-		.sort(byDistance);
+	const dangerSpiders = spiders.filter((spider) => spider.distance <= FOG_BASE).sort(byDistance);
 
 	// * Create group of danger spiders that heroes can kill
 	// They are calculated on each turns to update automatically and balance heroes if needed
@@ -358,13 +361,11 @@ while (true) {
 	// * Check if there is attacking heroes
 	// Silence heroes attacking our base urgently
 	const shieldedUltraDanger = dangerSpiders.find((s) => s.shieldLife > 0);
+	const enemiesInBase = enemies.filter(inRange(base, ATTACKING_ENEMY));
 	const controlledHeroes = heroes.filter((h) => h.isControlled);
 	let attackingEnemies: Entity[] =
-		shieldedUltraDanger || controlledHeroes.length > 0
-			? enemies
-					.sort(byDistanceToPosition(base))
-					.filter((e) => e.shieldLife === 0 && !e.willShield)
-					.filter(inRange(base, ATTACKING_ENEMY))
+		shieldedUltraDanger || controlledHeroes.length > 0 || enemiesInBase.length > 0
+			? enemiesInBase.sort(byDistanceToPosition(base))
 			: [];
 	const underAttack = attackingEnemies.length > 0;
 
@@ -384,7 +385,6 @@ while (true) {
 				const mostDangerous = dangerGroups[0];
 				if (mana >= 10) {
 					// Always extract to redirect spiders
-					// TODO Check if remainingRounds (time to kill until base) is enough or if a spell *is* needed
 					const closestSpider = mostDangerous.entities.sort(byDistanceToPosition(base))[0];
 					const centerDistance = distance(base, mostDangerous.center);
 					const heroDistance = distance(mostDangerous.center, hero);
@@ -426,7 +426,7 @@ while (true) {
 		}
 
 		// * Handle enemies
-		if (underAttack) {
+		if (underAttack && distance(hero, base) <= ATTACKING_ENEMY_RANGE) {
 			if (hero.shieldLife == 0) {
 				for (const enemy of attackingEnemies) {
 					if (distance(hero, enemy) < CONTROL_RANGE) {
@@ -511,7 +511,6 @@ while (true) {
 		}
 
 		// * Send bombs
-		// TODO Keep track of spiders and if they should be inside the enemy base to finish the opponent ?
 		if (!lockedAction && mana > KEEP_MANA_BEFORE_BOMBS) {
 			// If there is multiple spiders push them instead of control one by one
 			const pushableSpiders = spiders
@@ -520,6 +519,7 @@ while (true) {
 				.filter((s) => s.shieldLife === 0);
 			if (pushableSpiders.length > 1) {
 				action = push(pushableSpiders, enemyBase);
+				sendSpiders += pushableSpiders.length;
 			}
 			// Else control them to an enemy base corner
 			const controllableSpiders = heroCloseSpiders.filter(
@@ -547,17 +547,25 @@ while (true) {
 					} else {
 						action = control(mostXSpider, enemyCorners[1]);
 					}
+					sendSpiders += 1;
 				}
 			}
 		}
 
+		// TODO Update shouldAttack if in the enemy base and there is no spiders
+
 		// * Default action
 		if (!action) {
-			if (distance(hero, zones[i]) <= WIND_RANGE) {
-				tmpDestination[i] = i == 0 ? zones[2] : enemyAttackPoint;
-			}
-			if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
-				tmpDestination[i] = zones[i];
+			if (lastNoActionChange[i] <= 0) {
+				if (distance(hero, zones[i]) <= WIND_RANGE) {
+					tmpDestination[i] = i == 0 ? zones[2] : enemyAttackPoint;
+				}
+				if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
+					tmpDestination[i] = i == 0 ? zones[2] : zones[i];
+				}
+				lastNoActionChange[i] = DEFAULT_NO_SWITCH_TURNS;
+			} else {
+				lastNoActionChange[i] -= 1;
 			}
 			action = move(tmpDestination[i]);
 		} else {
