@@ -167,17 +167,26 @@ const enemyCorners: [Position, Position] = [
 	{ x: 400, y: 4500 },
 	{ x: 4500, y: 400 },
 ];
+const enemyOutsideCorner: [Position, Position] = [
+	{ x: 6000, y: 900 },
+	{ x: 900, y: 6000 },
+];
 const heroesPerPlayer: number = parseInt(readline()); // Always 3
 const zones: [Position, Position, Position] = [
-	{ x: 5000, y: 4700 }, // Center
-	{ x: 10000, y: 2200 }, // Top
-	{ x: 1950, y: 6500 }, // Bottom
+	{ x: 1950, y: 6500 },
+	{ x: 10000, y: 2200 },
+	{ x: 12000, y: 2200 },
 ];
-const enemyAttackPoint = { x: 3300, y: 3250 };
+const selfCenterPoint = { x: 7000, y: 1000 };
+const enemyAttackPoint = { x: 7000, y: 1000 };
 if (!baseIsAtZero) {
 	zones[0] = { x: base.x - zones[0].x, y: base.y - zones[0].y };
 	zones[1] = { x: base.x - zones[1].x, y: base.y - zones[1].y };
 	zones[2] = { x: base.x - zones[2].x, y: base.y - zones[2].y };
+	enemyOutsideCorner[0].x = enemyBase.x - enemyOutsideCorner[0].x;
+	enemyOutsideCorner[0].y = enemyBase.y - enemyOutsideCorner[0].y;
+	enemyOutsideCorner[1].x = enemyBase.x - enemyOutsideCorner[1].x;
+	enemyOutsideCorner[1].y = enemyBase.y - enemyOutsideCorner[1].y;
 } else {
 	enemyCorners[0] = { x: enemyBase.x - enemyCorners[0].x, y: enemyBase.y - enemyCorners[0].y };
 	enemyCorners[1] = { x: enemyBase.x - enemyCorners[1].x, y: enemyBase.y - enemyCorners[1].y };
@@ -309,6 +318,25 @@ function biggestCentroids(entities: Entity[]) {
 	return undefined;
 }
 
+function executeAction(action: AnyAction): boolean {
+	let playAction: string = "";
+	if (action.type === ActionType.WAIT) {
+		playAction = "WAIT";
+	} else if (action.type === ActionType.MOVE) {
+		playAction = `MOVE ${action.x} ${action.y}`;
+	} else {
+		if (action.spell === Spell.WIND) {
+			playAction = `SPELL ${action.spell} ${action.x} ${action.y}`;
+		} else if (action.spell === Spell.CONTROL) {
+			playAction = `SPELL ${action.spell} ${action.entity} ${action.x} ${action.y}`;
+		} else {
+			playAction = `SPELL ${action.spell} ${action.entity}`;
+		}
+	}
+	console.log(playAction);
+	return action.type === ActionType.SPELL;
+}
+
 // * Game loop
 
 while (true) {
@@ -378,7 +406,6 @@ while (true) {
 	// * Heroes loop
 	let otherHeroIsAttacking: Entity[] | undefined;
 	for (let i = 0; i < heroesPerPlayer; i++) {
-		const heroStartTime = +new Date();
 		const hero = heroes[i];
 		let action: AnyAction | undefined;
 		attackedInLastRounds[i] = attackedInLastRounds[i] > 0 ? attackedInLastRounds[i] - 1 : 0;
@@ -525,6 +552,7 @@ while (true) {
 		}
 
 		// * Send bombs
+		// TODO Make heroes attack in pair and push spiders to the enemy goal
 		if (!lockedAction && mana > KEEP_MANA_BEFORE_BOMBS) {
 			// If there is multiple spiders push them instead of control one by one
 			const pushableSpiders = spiders
@@ -590,43 +618,49 @@ while (true) {
 
 		// * Default action
 		if (!action) {
-			if (attackedInLastRounds[i] > 0 || distance(hero, zones[i]) <= WIND_RANGE) {
-				tmpDestination[i] = i == 0 ? zones[2] : enemyAttackPoint;
-			}
-			if (attackedInLastRounds[i] <= 0 && distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
-				tmpDestination[i] = i == 0 ? zones[2] : zones[i];
-			}
-			if (i === 0 && distance(hero, zones[2]) <= ATTACK_POINT_RANGE) {
-				tmpDestination[i] = zones[i];
+			if (i > 0) {
+				if (attackedInLastRounds[i] > 0) {
+					if (distance(hero, zones[i]) <= WIND_RANGE) {
+						tmpDestination[i] = enemyAttackPoint;
+					}
+					if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
+						const cornerDistance = [
+							distance(hero, enemyOutsideCorner[0]),
+							distance(hero, enemyOutsideCorner[1]),
+						];
+						if (cornerDistance[0] > cornerDistance[1]) {
+							tmpDestination[i] = enemyOutsideCorner[i == 1 ? 0 : 1];
+						} else {
+							tmpDestination[i] = enemyOutsideCorner[i == 1 ? 1 : 0];
+						}
+						tmpDestination[i] = zones[i];
+					}
+				} else {
+					if (distance(hero, zones[i]) <= WIND_RANGE) {
+						tmpDestination[i] = enemyAttackPoint;
+					}
+					if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
+						tmpDestination[i] = zones[i];
+					}
+				}
+			} else {
+				if (distance(hero, zones[i]) <= ATTACK_POINT_RANGE) {
+					tmpDestination[i] = selfCenterPoint;
+				} else {
+					tmpDestination[i] = zones[i];
+				}
 			}
 			action = move(tmpDestination[i]);
-		} else {
-			tmpDestination[i] = attackedInLastRounds[i] > 0 ? enemyAttackPoint : zones[i];
 		}
 
 		// * Update attack for next round
-		if (sendSpiders >= 10) {
+		if (sendSpiders >= 20) {
 			attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 		}
 
 		// * Execute action
-		let playAction: string = "";
-		if (action.type === ActionType.WAIT) {
-			playAction = "WAIT";
-		} else if (action.type === ActionType.MOVE) {
-			playAction = `MOVE ${action.x} ${action.y}`;
-		} else {
-			if (action.spell === Spell.WIND) {
-				playAction = `SPELL ${action.spell} ${action.x} ${action.y}`;
-			} else if (action.spell === Spell.CONTROL) {
-				playAction = `SPELL ${action.spell} ${action.entity} ${action.x} ${action.y}`;
-			} else {
-				playAction = `SPELL ${action.spell} ${action.entity}`;
-			}
-			mana -= 10;
-		}
-		const heroEndTime = +new Date();
-		console.log(`${playAction} ${heroEndTime - heroStartTime}ms`);
+		const castedSpell = executeAction(action);
+		if (castedSpell) mana -= 10;
 	}
 
 	// * Debug
