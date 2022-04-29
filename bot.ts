@@ -117,7 +117,7 @@ const DEFAULT_NO_SWITCH_AGENT = 20;
 const KEEP_MANA_BEFORE_BOMBS = 80;
 const SEND_ATTACk_TRESHOLD = 10;
 const DEFAULT_NO_SWITCH_TURNS = 20;
-const KEEP_ATTACKING_ROUNDS = 5;
+const KEEP_ATTACKING_ROUNDS = 10;
 
 // * Utilities
 
@@ -190,6 +190,7 @@ let enemyDoShield: boolean = false;
 const tmpDestination: [Position, Position, Position] = [...zones];
 let sendSpiders = 0;
 const attackedInLastRounds: [number, number, number] = [0, 0, 0];
+const controlledWhileAttacking: [boolean, boolean, boolean] = [false, false, false];
 
 // * Utilities
 
@@ -381,6 +382,11 @@ while (true) {
 		const hero = heroes[i];
 		let action: AnyAction | undefined;
 		attackedInLastRounds[i] = attackedInLastRounds[i] > 0 ? attackedInLastRounds[i] - 1 : 0;
+		if (attackedInLastRounds[i] <= 0) {
+			controlledWhileAttacking[i] = false;
+		} else if (controlledWhileAttacking[i] || hero.isControlled) {
+			controlledWhileAttacking[i] = true;
+		}
 
 		// * Danger groups
 		// * Only the first hero protect
@@ -478,6 +484,7 @@ while (true) {
 		if (!lockedAction && pushableSpiders.length > 3) {
 			action = push(pushableSpiders, enemyBase);
 			lockedAction = true;
+			attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 		}
 
 		// * Farm
@@ -497,21 +504,6 @@ while (true) {
 					return aDistance - bDistance;
 				});
 				action = move(biggestGroup[0].center);
-			}
-		}
-
-		// * Shield undefusable bombs
-		// TODO Actually shield spiders when there is a lot of them inside the enemy base
-		if (i > 0 && mana > 20) {
-			const superBombs = visibleSpiders
-				.filter((s) => s.shieldLife === 0 && !s.willShield && s.health > 15)
-				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
-				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
-			if (superBombs.length > 0) {
-				const bestSuperBomb = superBombs.sort(byDistanceToPosition(enemyBase))[0];
-				action = shield(bestSuperBomb);
-				lockedAction = true;
-				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 			}
 		}
 
@@ -555,10 +547,9 @@ while (true) {
 							(spider) =>
 								spider.health >= 15 &&
 								(spider.threatFor === Threat.self ||
-									(spider.threatFor === Threat.none && killable(hero)(spider)))
+									(spider.threatFor === Threat.none && !killable(hero)(spider)))
 						)
-						.map((spider) => ({ ...spider, remaining: roundsToLeaveMap(spider, spider.speed) }))
-						.sort((a, b) => a.remaining - b.remaining);
+						.sort((a, b) => roundsToLeaveMap(a, a.speed) - roundsToLeaveMap(b, b.speed));
 					const mostXSpider = uselessOrDanger[0];
 					// Control to the closest corner, to avoid sending everything to the front
 					if (uselessOrDanger.length > 0) {
@@ -571,10 +562,30 @@ while (true) {
 						} else {
 							action = control(mostXSpider, enemyCorners[1]);
 						}
+						action = control(mostXSpider, enemyCorners[1]);
 						sendSpiders += 1;
 					}
 				}
 			}
+		}
+
+		// * Shield undefusable bombs
+		// TODO Actually shield spiders when there is a lot of them inside the enemy base
+		if (i > 0 && mana > 20) {
+			const superBombs = visibleSpiders
+				.filter((s) => s.shieldLife === 0 && !s.willShield && s.health > 15)
+				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
+				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
+			if (superBombs.length > 0) {
+				const bestSuperBomb = superBombs.sort(byDistanceToPosition(enemyBase))[0];
+				action = shield(bestSuperBomb);
+				lockedAction = true;
+				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
+			}
+		}
+
+		if (i > 0 && attackedInLastRounds[i] > 0 && controlledWhileAttacking[i] && hero.shieldLife === 0) {
+			action = shield(hero);
 		}
 
 		// * Default action
@@ -591,6 +602,11 @@ while (true) {
 			action = move(tmpDestination[i]);
 		} else {
 			tmpDestination[i] = attackedInLastRounds[i] > 0 ? enemyAttackPoint : zones[i];
+		}
+
+		// * Update attack for next round
+		if (sendSpiders >= 10) {
+			attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 		}
 
 		// * Execute action
