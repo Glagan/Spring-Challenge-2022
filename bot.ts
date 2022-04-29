@@ -108,9 +108,11 @@ const SHIELD_MOVEMENT_RANGE = 23040000; // 4800 * 4800 (12 * 400)
 const CENTROID_RADIUS = 2560000; // 1600 * 1600
 const ATTACKING_ENEMY = 64000000; // 8000 * 8000
 const SEND_MINIMUM = 25000000; // 5000 * 5000
+const ATTACK_POINT_RANGE = 640000; // 800 * 800
 const BOUNDARY_X = 17630;
 const BOUNDARY_Y = 9000;
-const DEFAULT_NO_SWITCH_TURNS = 20;
+const DEFAULT_NO_SWITCH_PROTECTOR = 5;
+const DEFAULT_NO_SWITCH_AGENT = 20;
 const KEEP_MANA_BEFORE_BOMBS = 80;
 
 // * Utilities
@@ -163,7 +165,7 @@ const zones: [Position, Position, Position] = [
 	{ x: 10000, y: 2200 }, // Top
 	{ x: 1950, y: 6500 }, // Bottom
 ];
-const enemyAttackPoint = { x: 5000, y: 4700 };
+const enemyAttackPoint = { x: 3300, y: 3250 };
 if (!baseIsAtZero) {
 	zones[0] = { x: base.x - zones[0].x, y: base.y - zones[0].y };
 	zones[1] = { x: base.x - zones[1].x, y: base.y - zones[1].y };
@@ -177,8 +179,7 @@ if (!baseIsAtZero) {
 const shouldBeInZone: HeroRanking = [0, 1, 2];
 let enemyCanAttack: boolean = false;
 let enemyDoShield: boolean = false;
-const currentNoActionDestionation: [Position, Position, Position] = [...zones];
-const lastNoActionChange: [number, number, number] = [0, 0, 0];
+const tmpDestination: [Position, Position, Position] = [...zones];
 
 // * Utilities
 
@@ -348,14 +349,11 @@ while (true) {
 
 	// * Create group of danger spiders that heroes can kill
 	// They are calculated on each turns to update automatically and balance heroes if needed
-	const dangerStartTime = +new Date();
 	let dangerGroups: CentroidGroup[] = [];
 	if (dangerSpiders.length > 0) {
 		const groups = biggestCentroids(dangerSpiders);
 		if (groups) dangerGroups = groups.sort((a, b) => distance(base, a.center) - distance(base, b.center));
 	}
-	const dangerEndTime = +new Date();
-	console.error(`Danger groups ${dangerEndTime - dangerStartTime}ms`);
 
 	// * Check if there is attacking heroes
 	// Silence heroes attacking our base urgently
@@ -372,7 +370,6 @@ while (true) {
 
 	// * Heroes loop
 	let otherHeroIsAttacking: Entity[] | undefined;
-	const allHeroesStartTime = +new Date();
 	for (let i = 0; i < heroesPerPlayer; i++) {
 		const heroStartTime = +new Date();
 		const hero = heroes[i];
@@ -485,6 +482,7 @@ while (true) {
 		}
 
 		// * Shield undefusable bombs
+		// TODO Actually shield spiders when there is a lot of them inside the enemy base
 		if (!lockedAction && mana > 20) {
 			const superBombs = visibleSpiders
 				.filter((s) => s.shieldLife === 0 && !s.willShield)
@@ -513,6 +511,7 @@ while (true) {
 		}
 
 		// * Send bombs
+		// TODO Keep track of spiders and if they should be inside the enemy base to finish the opponent ?
 		if (!lockedAction && mana > KEEP_MANA_BEFORE_BOMBS) {
 			// If there is multiple spiders push them instead of control one by one
 			const pushableSpiders = spiders
@@ -554,17 +553,15 @@ while (true) {
 
 		// * Default action
 		if (!action) {
-			if (i > 0 && lastNoActionChange[i] <= 0) {
-				if (distance(hero, zones[i]) < HERO_VIEW) {
-					currentNoActionDestionation[i] = enemyAttackPoint;
-				} else {
-					currentNoActionDestionation[i] = zones[i];
-				}
-				lastNoActionChange[i] = DEFAULT_NO_SWITCH_TURNS;
-			} else {
-				lastNoActionChange[i] -= 1;
+			if (distance(hero, zones[i]) <= WIND_RANGE) {
+				tmpDestination[i] = i == 0 ? zones[2] : enemyAttackPoint;
 			}
-			action = move(currentNoActionDestionation[i]);
+			if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
+				tmpDestination[i] = zones[i];
+			}
+			action = move(tmpDestination[i]);
+		} else {
+			tmpDestination[i] = zones[i];
 		}
 
 		// * Execute action
@@ -586,8 +583,6 @@ while (true) {
 		const heroEndTime = +new Date();
 		console.log(`${playAction} ${heroEndTime - heroStartTime}ms`);
 	}
-	const allHeroesEndTime = +new Date();
-	console.error(`Heroes ${allHeroesEndTime - allHeroesStartTime}ms`);
 
 	// * Debug
 	const endTime = +new Date();
