@@ -197,14 +197,15 @@ const enemyCorners: {
 	],
 };
 const protectorPatrol: Position[] = [
-	{ x: 1000, y: 5000 },
-	{ x: 3500, y: 3600 },
-	{ x: 5000, y: 1000 },
+	{ x: 1320, y: 5888 },
+	{ x: 4600, y: 3990 },
+	{ x: 5888, y: 1320 },
 ];
-let currentPatrolZone = 1;
+let currentPatrolZone = 0;
 let attack = false;
 let didNotMoveFor = 0;
 let useCorner = 0;
+let keepAttacking = 0;
 
 // * Reverse position
 
@@ -510,48 +511,40 @@ while (true) {
 					action = move(mostDangerous.center);
 				}
 			}
+			// * Extract threat spiders directly
+			// Control them to an enemy base corner
+			else if (selfStatus.mana >= 10) {
+				const controllableSpiders = visibleSpiders.filter(
+					(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl && s.threatFor === Threat.self
+				);
+				if (controllableSpiders.length > 0) {
+					const mostXSpider = controllableSpiders.sort(byDistance)[0];
+					const cornerDistance = [
+						distance(mostXSpider, enemyCorners.control[0]),
+						distance(mostXSpider, enemyCorners.control[1]),
+					];
+					if (cornerDistance[0] < cornerDistance[1]) {
+						action = control(mostXSpider, enemyCorners.control[0]);
+					} else {
+						action = control(mostXSpider, enemyCorners.control[1]);
+					}
+				}
+			}
 
 			// * Handle enemies
 			if ((attack && selfStatus.mana >= 10) || (!attack && selfStatus.mana >= 100)) {
-				if (underAttack && distance(hero, base) <= ATTACKING_ENEMY_RANGE) {
-					if (enemyCastInAttack && hero.shieldLife == 0) {
-						for (const enemy of attackingEnemies) {
-							if (distance(hero, enemy) < CONTROL_RANGE) {
-								action = shield(hero);
-								break;
-							}
+				if (enemyCastInAttack && hero.shieldLife == 0) {
+					for (const enemy of attackingEnemies) {
+						if (distance(hero, enemy) < CONTROL_RANGE) {
+							action = shield(hero);
+							break;
 						}
-					} else if (attackingEnemies.length > 0) {
-						for (const enemy of attackingEnemies) {
-							const canBeMoved = enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl;
-							if (!canBeMoved) continue;
-							if (distance(hero, enemy) <= WIND_RANGE) {
-								action = push([enemy], enemyBase);
-								attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
-								break;
-							} else if (distance(hero, enemy) <= WIND_RANGE) {
-								action = control(enemy, enemyBase);
-								attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
-								break;
-							}
-						}
-					}
-				} else {
-					const visibleEnemies = enemies
-						.filter(inRange(hero, HERO_VIEW))
-						.filter((enemy) => enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl)
-						.sort(byDistance);
-					if (visibleEnemies.length > 0) {
-						const closestCorner =
-							distance(visibleEnemies[0], mapCorners[0]) < distance(visibleEnemies[0], mapCorners[1])
-								? 1
-								: 0;
-						action = control(visibleEnemies[0], mapCorners[closestCorner]);
 					}
 				}
 			}
 
 			// * Farm
+			// TODO BETTER FARM
 			const closeKillable = heroCloseSpiders; // .filter(killable(hero));
 			if (!action && closeKillable.length > 0) {
 				const groups = biggestCentroids(closeKillable)?.filter(
@@ -572,48 +565,17 @@ while (true) {
 				}
 			}
 
-			// * Send spiders for the future
-			if (selfStatus.mana > 100) {
-				// Control them to an enemy base corner
-				const controllableSpiders = heroCloseSpiders.filter(
-					(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl
-				);
-				if (controllableSpiders.length > 0) {
-					const uselessOrDanger = controllableSpiders.filter(
-						(spider) => spider.health >= 15 && spider.threatFor === Threat.self
-					);
-					const mostXSpider = uselessOrDanger[0];
-					// Control to the closest corner, to avoid sending everything to the front
-					if (uselessOrDanger.length > 0) {
-						const cornerDistance = [
-							distance(mostXSpider, enemyCorners.control[0]),
-							distance(mostXSpider, enemyCorners.control[1]),
-						];
-						if (cornerDistance[0] < cornerDistance[1]) {
-							action = control(mostXSpider, enemyCorners.control[0]);
-						} else {
-							action = control(mostXSpider, enemyCorners.control[1]);
-						}
-					}
-				}
-			}
-
 			// * Default action
 			if (!action) {
-				if (attack) {
-					// Resume patrol to the closest patrol point
-					if (currentPatrolZone === -1) {
-						currentPatrolZone = 1;
-						// let patrolPoint = closestPatrol(hero);
-					}
-					// TODO Check if there is any enemy and patrol to the closest patrol point of the enemy
-					if (distance(hero, protectorPatrol[currentPatrolZone]) < SPIDER_POINT_RANGE) {
-						currentPatrolZone = (currentPatrolZone + 1) % 3;
-					}
-					action = move(protectorPatrol[currentPatrolZone]);
-				} else {
-					action = move(farmZones[i]);
+				// Resume patrol to the closest patrol point
+				if (currentPatrolZone === -1) {
+					currentPatrolZone = 1;
+					// let patrolPoint = closestPatrol(hero);
 				}
+				if (distance(hero, protectorPatrol[currentPatrolZone]) < SPIDER_POINT_RANGE) {
+					currentPatrolZone = (currentPatrolZone + 1) % 3;
+				}
+				action = move(protectorPatrol[currentPatrolZone]);
 			} else {
 				currentPatrolZone = -1;
 			}
@@ -664,25 +626,8 @@ while (true) {
 					}
 				}
 
-				// TODO Prepare CANNON
-				const preparableSpiders = visibleSpiders.filter(
-					(s) => s.threatFor != Threat.opponent && !s.isControlled && !s.willControl && s.shieldLife === 0
-				);
-				if (preparableSpiders.length > 0) {
-					action = control(preparableSpiders[0], enemyBase);
-				}
-
-				// TODO CANNON
-				const cannonSpiders = visibleSpiders
-					.filter(inRange(enemyBase, WIND_BOMB_RANGE))
-					.filter(inRange(hero, WIND_RANGE))
-					.filter((s) => s.threatFor === Threat.opponent);
-				// console.error(cannonSpiders);
-				if (cannonSpiders.length > 0) {
-					action = push(cannonSpiders, enemyBase);
-				}
 				// * Shield undefusable bombs
-				else if (selfStatus.mana > 20) {
+				if (selfStatus.mana > 20) {
 					const superBombs = visibleSpiders
 						.filter(
 							(s) =>
@@ -694,16 +639,38 @@ while (true) {
 					if (superBombs.length > 0) {
 						const bestSuperBomb = superBombs.sort(byDistanceToPosition(enemyBase))[0];
 						action = shield(bestSuperBomb);
+						keepAttacking += 2;
 					}
+				}
+
+				// * Prepare CANNON
+				const preparableSpiders = visibleSpiders.filter(
+					(s) => s.threatFor != Threat.opponent && !s.isControlled && !s.willControl && s.shieldLife === 0
+				);
+				if (preparableSpiders.length > 0) {
+					action = control(preparableSpiders[0], enemyBase);
+					didNotMoveFor -= 2;
+					keepAttacking += 2;
+				}
+
+				// * CANNON
+				const cannonSpiders = visibleSpiders
+					.filter(inRange(enemyBase, WIND_BOMB_RANGE))
+					.filter(inRange(hero, WIND_RANGE))
+					.filter((s) => s.threatFor === Threat.opponent);
+				// console.error(cannonSpiders);
+				if (cannonSpiders.length > 0) {
+					action = push(cannonSpiders, enemyBase);
+					didNotMoveFor -= 2;
+					keepAttacking += 2;
 				}
 
 				if (controlledWhileAttacking[i] && hero.shieldLife === 0) {
 					action = shield(hero);
 				}
 
-				// TODO Default action
+				// * Default action
 				if (!action) {
-					// TODO Control spiders to a position where it can be pushed later
 					if (distance(hero, enemyCorners.stack[useCorner]) < 1000) {
 						didNotMoveFor += 1;
 					} else {
@@ -716,11 +683,12 @@ while (true) {
 				}
 			} else {
 				// * Farm
+				// TODO BETTER FARM
 				// -- stay near of the original farm zone to control entries
 				const closeKillable = heroCloseSpiders; // .filter(killable(hero));
 				if (closeKillable.length > 0) {
 					const groups = biggestCentroids(closeKillable)?.filter(
-						(g) => distance(farmZones[i], g.center) <= HERO_VIEW
+						(g) => distance(farmZones[i], g.center) <= HERO_VIEW * 1.5
 					);
 					if (groups && groups.length > 0) {
 						// Sort groups to focus the biggest one and the closest one
@@ -738,27 +706,21 @@ while (true) {
 				}
 
 				// * Send spiders for the future
-				if (selfStatus.mana > 100) {
+				if (selfStatus.mana >= 50) {
 					// Control them to an enemy base corner
 					const controllableSpiders = heroCloseSpiders.filter(
-						(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl
+						(s) => !s.isControlled && s.shieldLife === 0 && !s.willControl && s.threatFor === Threat.self
 					);
 					if (controllableSpiders.length > 0) {
-						const uselessOrDanger = controllableSpiders.filter(
-							(spider) => spider.health >= 15 && spider.threatFor === Threat.self
-						);
-						const mostXSpider = uselessOrDanger[0];
-						// Control to the closest corner, to avoid sending everything to the front
-						if (uselessOrDanger.length > 0) {
-							const cornerDistance = [
-								distance(mostXSpider, enemyCorners.control[0]),
-								distance(mostXSpider, enemyCorners.control[1]),
-							];
-							if (cornerDistance[0] < cornerDistance[1]) {
-								action = control(mostXSpider, enemyCorners.control[0]);
-							} else {
-								action = control(mostXSpider, enemyCorners.control[1]);
-							}
+						const mostXSpider = controllableSpiders.sort(byDistance)[0];
+						const cornerDistance = [
+							distance(mostXSpider, enemyCorners.control[0]),
+							distance(mostXSpider, enemyCorners.control[1]),
+						];
+						if (cornerDistance[0] < cornerDistance[1]) {
+							action = control(mostXSpider, enemyCorners.control[0]);
+						} else {
+							action = control(mostXSpider, enemyCorners.control[1]);
 						}
 					}
 				}
@@ -774,7 +736,10 @@ while (true) {
 	}
 
 	// * Execute actions
-	if (attack || selfStatus.mana >= FARM_UNTIL_MANA) attack = true;
+	if (selfStatus.mana >= FARM_UNTIL_MANA || keepAttacking > 0) {
+		attack = true;
+	}
+	keepAttacking -= 1;
 	for (const i of [0, 2, 1]) {
 		const castedSpell = executeAction(actions[i]);
 		if (castedSpell) selfStatus.mana -= 10;
