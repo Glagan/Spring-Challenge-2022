@@ -108,13 +108,13 @@ const SHIELD_MOVEMENT_RANGE = 23040000; // 4800 * 4800 (12 * 400)
 const CENTROID_RADIUS = 2560000; // 1600 * 1600
 const ATTACKING_ENEMY = 49000000; // 7000 * 7000
 const ATTACKING_ENEMY_RANGE = 64000000; // 8000 * 8000
-const SEND_MINIMUM = 25000000; // 5000 * 5000
+const SEND_MINIMUM = FOG_BASE; // 6000 * 6000
 const ATTACK_POINT_RANGE = 640000; // 800 * 800
 const BOUNDARY_X = 17630;
 const BOUNDARY_Y = 9000;
 const DEFAULT_NO_SWITCH_PROTECTOR = 5;
 const DEFAULT_NO_SWITCH_AGENT = 20;
-const KEEP_MANA_BEFORE_BOMBS = 80;
+const KEEP_MANA_BEFORE_BOMBS = 60;
 const SEND_ATTACk_TRESHOLD = 10;
 const DEFAULT_NO_SWITCH_TURNS = 20;
 const KEEP_ATTACKING_ROUNDS = 10;
@@ -173,9 +173,14 @@ const enemyOutsideCorner: [Position, Position] = [
 ];
 const heroesPerPlayer: number = parseInt(readline()); // Always 3
 const zones: [Position, Position, Position] = [
-	{ x: 1950, y: 6500 },
+	{ x: 2300, y: 6500 },
+	{ x: 11000, y: 8000 },
 	{ x: 10000, y: 2200 },
-	{ x: 12000, y: 2200 },
+];
+const patrolZones: [Position, Position, Position] = [
+	{ x: 5000, y: 6500 },
+	{ x: 16800, y: 2700 },
+	{ x: 2300, y: 6500 },
 ];
 const selfCenterPoint = { x: 7000, y: 1000 };
 const enemyAttackPoint = { x: 7000, y: 1000 };
@@ -183,6 +188,9 @@ if (!baseIsAtZero) {
 	zones[0] = { x: base.x - zones[0].x, y: base.y - zones[0].y };
 	zones[1] = { x: base.x - zones[1].x, y: base.y - zones[1].y };
 	zones[2] = { x: base.x - zones[2].x, y: base.y - zones[2].y };
+	patrolZones[0] = { x: base.x - patrolZones[0].x, y: base.y - patrolZones[0].y };
+	patrolZones[1] = { x: base.x - patrolZones[1].x, y: base.y - patrolZones[1].y };
+	patrolZones[2] = { x: base.x - patrolZones[2].x, y: base.y - patrolZones[2].y };
 	enemyOutsideCorner[0].x = enemyBase.x - enemyOutsideCorner[0].x;
 	enemyOutsideCorner[0].y = enemyBase.y - enemyOutsideCorner[0].y;
 	enemyOutsideCorner[1].x = enemyBase.x - enemyOutsideCorner[1].x;
@@ -200,6 +208,7 @@ const tmpDestination: [Position, Position, Position] = [...zones];
 let sendSpiders = 0;
 const attackedInLastRounds: [number, number, number] = [0, 0, 0];
 const controlledWhileAttacking: [boolean, boolean, boolean] = [false, false, false];
+let enemyCastInAttack = false;
 
 // * Utilities
 
@@ -402,11 +411,18 @@ while (true) {
 			? enemiesInBase.sort(byDistanceToPosition(base))
 			: [];
 	const underAttack = attackingEnemies.length > 0;
+	if (!enemyCastInAttack) {
+		enemyCastInAttack =
+			heroes.filter(inRange(base, ATTACKING_ENEMY)).filter((h) => h.isControlled).length > 0 ||
+			dangerSpiders.filter((s) => s.shieldLife > 0 /* || s.isControlled */).length > 0;
+	}
 
 	// * Heroes loop
 	let otherHeroIsAttacking: Entity[] | undefined;
 	for (let i = 0; i < heroesPerPlayer; i++) {
 		const hero = heroes[i];
+		const visibleSpiders = spiders.filter(visible(hero));
+		const heroCloseSpiders = visibleSpiders.filter((s) => s.threatFor !== Threat.opponent);
 		let action: AnyAction | undefined;
 		attackedInLastRounds[i] = attackedInLastRounds[i] > 0 ? attackedInLastRounds[i] - 1 : 0;
 		if (attackedInLastRounds[i] <= 0) {
@@ -418,10 +434,13 @@ while (true) {
 		// * Danger groups
 		// * Only the first hero protect
 		let lockedAction = false;
-		if (i === 0) {
-			if (dangerGroups.length > 0) {
+		if (i !== 1) {
+			const closestGroups = dangerGroups.filter(
+				(g) => (i === 0 && distance(g.center, hero) <= distance(g.center, heroes[2])) || i === 2
+			);
+			if (closestGroups.length > 0) {
 				lockedAction = true;
-				const mostDangerous = dangerGroups[0];
+				const mostDangerous = closestGroups[0];
 				if (mana >= 10) {
 					// Always extract to redirect spiders
 					const closestSpider = mostDangerous.entities.sort(byDistanceToPosition(base))[0];
@@ -462,82 +481,68 @@ while (true) {
 				else {
 					action = move(mostDangerous.center);
 				}
+				if (mostDangerous.entities.length < 2) {
+					const index = dangerGroups.findIndex(
+						(g) => g.center.x === mostDangerous.center.x && g.center.y === mostDangerous.center.y
+					);
+					dangerGroups.splice(index, 1);
+				}
 			}
 		}
 
 		// * Handle enemies
-		if (underAttack && distance(hero, base) <= ATTACKING_ENEMY_RANGE) {
-			if (hero.shieldLife == 0) {
-				for (const enemy of attackingEnemies) {
-					if (distance(hero, enemy) < CONTROL_RANGE) {
-						action = shield(hero);
-						lockedAction = true;
-						break;
+		if (mana >= 10) {
+			if (underAttack && distance(hero, base) <= ATTACKING_ENEMY_RANGE) {
+				if (enemyCastInAttack && hero.shieldLife == 0) {
+					for (const enemy of attackingEnemies) {
+						if (distance(hero, enemy) < CONTROL_RANGE) {
+							action = shield(hero);
+							lockedAction = true;
+							break;
+						}
 					}
-				}
-			} else if (attackingEnemies.length > 0) {
-				lockedAction = true;
-				for (const enemy of attackingEnemies) {
-					const canBeMoved = enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl;
-					if (!canBeMoved) continue;
-					if (distance(hero, enemy) <= WIND_RANGE) {
-						action = push([enemy], enemyBase);
-						attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
-						break;
-					} else if (distance(hero, enemy) <= WIND_RANGE) {
-						action = control(enemy, enemyBase);
-						attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
-						break;
+				} else if (attackingEnemies.length > 0) {
+					for (const enemy of attackingEnemies) {
+						const canBeMoved = enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl;
+						if (!canBeMoved) continue;
+						if (distance(hero, enemy) <= WIND_RANGE) {
+							action = push([enemy], enemyBase);
+							attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
+							break;
+						} else if (distance(hero, enemy) <= WIND_RANGE) {
+							action = control(enemy, enemyBase);
+							attackingEnemies = attackingEnemies.filter((e) => e.id === enemy.id);
+							break;
+						}
 					}
+					if (action) lockedAction = true;
 				}
-				if (action) lockedAction = true;
-			}
-		} else if (i === 0) {
-			const visibleEnemies = enemies
-				.filter(inRange(hero, HERO_VIEW))
-				.filter((enemy) => enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl)
-				.sort(byDistance);
-			if (visibleEnemies.length > 0) {
-				const closestCorner =
-					distance(visibleEnemies[0], mapCorners[0]) < distance(visibleEnemies[0], mapCorners[1]) ? 0 : 1;
-				action = control(visibleEnemies[0], mapCorners[closestCorner]);
+			} else if (i === 0) {
+				const visibleEnemies = enemies
+					.filter(inRange(hero, HERO_VIEW))
+					.filter((enemy) => enemy.shieldLife === 0 && !enemy.isControlled && !enemy.willControl)
+					.sort(byDistance);
+				if (visibleEnemies.length > 0) {
+					const closestCorner =
+						distance(visibleEnemies[0], mapCorners[0]) < distance(visibleEnemies[0], mapCorners[1]) ? 1 : 0;
+					action = control(visibleEnemies[0], mapCorners[closestCorner]);
+				}
 			}
 		}
 
 		// * Handle transitions
 		// Control spiders to send them back to the enemy base
-		const visibleSpiders = spiders.filter(visible(hero));
 		const pushableSpiders = visibleSpiders.filter(inRange(hero, WIND_RANGE));
-		if (!lockedAction && pushableSpiders.length > 3) {
+		if (!lockedAction && mana > 40 && pushableSpiders.length > 2) {
 			action = push(pushableSpiders, enemyBase);
 			lockedAction = true;
 			attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 		}
 
-		// * Farm
-		const heroCloseSpiders = visibleSpiders.filter((s) => s.threatFor !== Threat.opponent);
-		const closeKillable = heroCloseSpiders.filter(killable(hero));
-		if (!lockedAction && closeKillable.length > 0) {
-			const groups = biggestCentroids(closeKillable);
-			if (groups) {
-				// Sort groups to focus the biggest one and the closest one
-				const biggestGroup = groups.sort((a, b) => {
-					const aOnlyKillable = a.entities.filter(killable(hero));
-					const bOnlyKillable = b.entities.filter(killable(hero));
-					if (aOnlyKillable.length > bOnlyKillable.length) return 1;
-					if (aOnlyKillable.length < bOnlyKillable.length) return -1;
-					const aDistance = distance(hero, a.center);
-					const bDistance = distance(hero, b.center);
-					return aDistance - bDistance;
-				});
-				action = move(biggestGroup[0].center);
-			}
-		}
-
 		// * Send directly to the enemy base
-		if (i > 0 && mana > 20 && distance(hero, heroes[2]) <= HERO_VIEW) {
+		if (i === 1 && mana > 20 && distance(hero, heroes[2]) <= HERO_VIEW) {
 			// Check if there is at least 1 spider that is close enough to the enemy base
-			const sendableSpiders = visibleSpiders.filter(inRange(enemyBase, SEND_MINIMUM));
+			const sendableSpiders = visibleSpiders.filter(inRange(enemyBase, WIND_BOMB_RANGE));
 			if (sendableSpiders.length > 0) {
 				lockedAction = true;
 				action = push(sendableSpiders, enemyBase);
@@ -551,13 +556,27 @@ while (true) {
 			attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
 		}
 
+		// * Attacker send bombs
+		if (i === 1 && mana >= 20) {
+			const pushableSpiders = spiders
+				.filter(inRange(hero, WIND_RANGE))
+				.filter(inRange(enemyBase, SEND_MINIMUM))
+				.filter((s) => s.shieldLife === 0 && s.threatFor === Threat.opponent);
+			if (pushableSpiders.length > 0) {
+				action = push(pushableSpiders, enemyBase);
+				sendSpiders += pushableSpiders.length;
+				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
+				lockedAction = true;
+			}
+		}
+
 		// * Send bombs
 		// TODO Make heroes attack in pair and push spiders to the enemy goal
 		if (!lockedAction && mana > KEEP_MANA_BEFORE_BOMBS) {
 			// If there is multiple spiders push them instead of control one by one
 			const pushableSpiders = spiders
 				.filter(inRange(hero, WIND_RANGE))
-				.filter(inRange(enemyBase, WIND_BOMB_RANGE))
+				.filter(inRange(enemyBase, SEND_MINIMUM))
 				.filter((s) => s.shieldLife === 0);
 			if (pushableSpiders.length > 1) {
 				action = push(pushableSpiders, enemyBase);
@@ -601,14 +620,39 @@ while (true) {
 		// TODO Actually shield spiders when there is a lot of them inside the enemy base
 		if (i > 0 && mana > 20) {
 			const superBombs = visibleSpiders
-				.filter((s) => s.shieldLife === 0 && !s.willShield && s.health > 15)
+				.filter((s) => s.shieldLife === 0 && !s.willShield && s.health >= 15)
 				// Checking SHIELD_MOVEMENT_RANGE is equivalent to checking if the unit can't be killed
-				.filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
+				// .filter(inRange(enemyBase, SHIELD_MOVEMENT_RANGE));
+				.filter(inRange(enemyBase, SEND_MINIMUM));
 			if (superBombs.length > 0) {
 				const bestSuperBomb = superBombs.sort(byDistanceToPosition(enemyBase))[0];
 				action = shield(bestSuperBomb);
 				lockedAction = true;
 				attackedInLastRounds[i] = KEEP_ATTACKING_ROUNDS;
+			}
+		}
+
+		// * Farm
+		const closeKillable = heroCloseSpiders; // .filter(killable(hero));
+		if (!lockedAction && closeKillable.length > 0) {
+			const groups = biggestCentroids(closeKillable);
+			if (groups) {
+				// Sort groups to focus the biggest one and the closest one
+				const biggestGroup = groups.sort((a, b) => {
+					const aOnlyKillable = a.entities.filter(killable(hero));
+					const bOnlyKillable = b.entities.filter(killable(hero));
+					if (aOnlyKillable.length > bOnlyKillable.length) return 1;
+					if (aOnlyKillable.length < bOnlyKillable.length) return -1;
+					if (i === 1) {
+						const aDistance = distance(hero, a.center);
+						const bDistance = distance(hero, b.center);
+						return aDistance - bDistance;
+					}
+					const aDistance = distance(base, a.center);
+					const bDistance = distance(base, b.center);
+					return aDistance - bDistance;
+				});
+				action = move(biggestGroup[0].center);
 			}
 		}
 
@@ -618,35 +662,26 @@ while (true) {
 
 		// * Default action
 		if (!action) {
-			if (i > 0) {
-				if (attackedInLastRounds[i] > 0) {
-					if (distance(hero, zones[i]) <= WIND_RANGE) {
-						tmpDestination[i] = enemyAttackPoint;
-					}
-					if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
-						const cornerDistance = [
-							distance(hero, enemyOutsideCorner[0]),
-							distance(hero, enemyOutsideCorner[1]),
-						];
-						if (cornerDistance[0] > cornerDistance[1]) {
-							tmpDestination[i] = enemyOutsideCorner[i == 1 ? 0 : 1];
-						} else {
-							tmpDestination[i] = enemyOutsideCorner[i == 1 ? 1 : 0];
-						}
-						tmpDestination[i] = zones[i];
-					}
-				} else {
-					if (distance(hero, zones[i]) <= WIND_RANGE) {
-						tmpDestination[i] = enemyAttackPoint;
-					}
-					if (distance(hero, enemyAttackPoint) <= ATTACK_POINT_RANGE) {
-						tmpDestination[i] = zones[i];
-					}
+			if (i === 0) {
+				/* if (underAttack && enemiesInBase.length > 0) {
+					tmpDestination[i] = enemiesInBase[i];
+				} else */ if (distance(hero, zones[i]) <= ATTACK_POINT_RANGE) {
+					tmpDestination[i] = patrolZones[i];
+				} else if (distance(hero, patrolZones[i]) <= ATTACK_POINT_RANGE) {
+					tmpDestination[i] = zones[i];
+				}
+			} else if (i === 1) {
+				if (distance(hero, zones[i]) <= WIND_RANGE) {
+					tmpDestination[i] = patrolZones[i];
+				} else if (distance(hero, patrolZones[i]) <= ATTACK_POINT_RANGE) {
+					tmpDestination[i] = zones[i];
 				}
 			} else {
-				if (distance(hero, zones[i]) <= ATTACK_POINT_RANGE) {
-					tmpDestination[i] = selfCenterPoint;
-				} else {
+				/* if (underAttack && i === 2 && distance(hero, patrolZones[0]) > ATTACK_POINT_RANGE) {
+					tmpDestination[i] = patrolZones[0];
+				} else */ if (distance(hero, zones[i]) <= WIND_RANGE) {
+					tmpDestination[i] = patrolZones[i];
+				} else if (distance(hero, patrolZones[i]) <= ATTACK_POINT_RANGE) {
 					tmpDestination[i] = zones[i];
 				}
 			}
